@@ -16,8 +16,7 @@ backgrounds, event CGs and character sprites.
 
 You need **both** games:
 
-Muv-Luv photonmelodies♮ 
-Muv-Luv Altered Fable, 2007 from Dlsite (You can get it on the sukebei.nyaa.si site specfically from the 20th BOX Edition)
+Muv-Luv photonmelodies♮ and Muv-Luv Altered Fable 2007 from Dlsite (You can get it on the sukebei.nyaa.si site specfically from the 20th BOX Edition)
 
 ## How to use
 
