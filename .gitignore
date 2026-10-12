@@ -1,0 +1,14 @@
+# build output
+build/
+dist/
+__pycache__/
+*.pyc
+
+# never commit game data or generated patches
+*.rio
+*.rio.*
+*.ruo*
+*.uux
+*.uuc
+*.oor
+*.bin
