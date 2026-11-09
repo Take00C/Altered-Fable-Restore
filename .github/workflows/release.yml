@@ -1,0 +1,755 @@
+# Completes a GitHub release of Altered Fable Restore. The release itself (tag, title, text, and usually the Windows
+# zip) is made by hand on the website; this workflow builds the two programs (Altered Fable Restore and the Scene
+# Tester) for Linux, and for Windows when the release has no Windows zip, and attaches the files. See BUILDING.md.
+#
+#   Release published, tag vX.Y.Z  -> AFRestore-vX.Y.Z-linux-x64.tar.gz built and attached; AFRestore-vX.Y.Z-win-x64.zip
+#                                     too when the release has none, else the release's zip is checked (opened like the
+#                                     app's update opens it, both programs started once); SHA256SUMS.txt rewritten for
+#                                     every .zip / .tar.gz and attached before the archives; RELEASE_NOTES_vX.Y.Z.md
+#                                     attached from CHANGELOG.md when missing
+#   Run workflow, tag vX.Y.Z       -> the same again for that published release (a re-run)
+#   Run workflow, tag empty        -> test build of the branch picked in "Use workflow from": both archives are kept as
+#                                     run artifacts (14 days) and no release is touched
+# The release's title and text are never changed. The repository is flat: every file is at its top level (this file
+# is the only one in a folder), and the files are checked out from the release's tag.
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of a published release to complete again (e.g. v0.1.0). Leave empty for a test build without a release.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The release this run completes ('' for a test build), and the git ref it builds: the release's tag, or for a test
+  # build the branch or tag the run was started from.
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  BUILD_REF: ${{ (github.event.release.tag_name || inputs.tag) && format('refs/tags/{0}', github.event.release.tag_name || inputs.tag) || github.ref }}
+  # PyInstaller and everything it installs, pinned by version and SHA-256 of the wheel (pip --require-hashes,
+  # wheels only), so the programs are built from exactly these packages. To update one, take the version and the
+  # wheel's sha256 from https://pypi.org/project/<name>/<version>/#files; pip refuses to install if a dependency is
+  # missing from this list.
+  BUILD_REQUIREMENTS: |
+    pyinstaller==6.22.3 \
+        --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b \
+        --hash=sha256:451a4ae14b719365bf1a2f0a99dae7b3463060061c3a394c70d5264cfb439528
+    pyinstaller-hooks-contrib==2026.9 \
+        --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
+    altgraph==0.17.5 \
+        --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+    packaging==26.3 \
+        --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+    setuptools==84.2.1 \
+        --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+    pefile==2024.8.26 ; sys_platform == "win32" \
+        --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+    pywin32-ctypes==0.2.3 ; sys_platform == "win32" \
+        --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+  # Syntax check: parses every file named on the command line; nothing is imported or run.
+  CHECK_SOURCES_PY: |
+    import ast, sys
+    files = sys.argv[1:]
+    if not files:
+        sys.exit('no .py files at the top of the repository')
+    for path in files:
+        with open(path, 'rb') as f:
+            ast.parse(f.read(), path)
+    print('syntax OK:', len(files), 'files')
+  # Before anything is installed or built: every file the two specs name is at the top of the repository, the specs
+  # build every path from SPECPATH (no absolute paths), app.py has --selftest and APP_VERSION = 'X.Y.Z', and for a
+  # release the tag is v + APP_VERSION (the app's update check compares the two). Sets the step outputs
+  # publish=true|false and version=X.Y.Z (the release's version; for a test build, APP_VERSION).
+  PREFLIGHT_PY: |
+    import ast, os, re, sys
+    errors = []
+    tag = os.environ.get('RELEASE_TAG', '')
+    publish = tag != ''
+    ENTRY = {'AFRestore.spec': 'app.py', 'AFRestoreSceneTester.spec': 'scenetester.py'}
+    need = {'omsig_data.txt'}
+
+
+    def parse(path):
+        try:
+            with open(path, encoding='utf-8') as f:
+                return ast.parse(f.read(), path)
+        except FileNotFoundError:
+            pass                                     # reported with the other missing files
+        except (SyntaxError, ValueError) as e:
+            errors.append('%s cannot be read: %s' % (path, e))
+        return None
+
+
+    def literal_list(tree, path, name):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.keyword) and node.arg == name:
+                value = node.value
+            elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+                value = node.value
+            else:
+                continue
+            try:
+                v = ast.literal_eval(value)
+            except ValueError:
+                break
+            if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                return v
+            break
+        errors.append('%s: %s must be a plain list of names (the frozen programs are checked against it)' % (path, name))
+        return []
+
+
+    for spec, entry in ENTRY.items():
+        need.update((spec, entry))
+        tree = parse(spec)
+        if tree is None:
+            continue
+        for node in sorted(ast.walk(tree), key=lambda n: (getattr(n, 'lineno', 0), getattr(n, 'col_offset', 0))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.match(r'([A-Za-z]:)?[\\/]|~', node.value):
+                errors.append('%s line %d has the absolute path %r: build paths from SPECPATH (see BUILDING.md)'
+                              % (spec, node.lineno, node.value))
+        need.update(h + '.py' for h in literal_list(tree, spec, 'hiddenimports'))
+        need.update(literal_list(tree, spec, 'DATA_FILES'))
+    missing = sorted(n for n in need if not os.path.isfile(n))
+    if missing:
+        errors.append('not at the top of the repository: %s (upload them with the other files)' % ', '.join(missing))
+    app_version, selftest = None, False
+    app = parse('app.py')
+    if app is not None:
+        for node in app.body:
+            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'APP_VERSION' for t in node.targets):
+                v = node.value
+                app_version = v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else ast.unparse(v)
+        selftest = any(isinstance(n, ast.Constant) and n.value == '--selftest' for n in ast.walk(app))
+        if not selftest:
+            errors.append('app.py has no --selftest flag: the frozen programs must be started once (see BUILDING.md)')
+        if app_version is None:
+            errors.append("app.py has no APP_VERSION = '...' line")
+        elif not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', app_version):
+            errors.append("app.py has APP_VERSION = %r: it must be X.Y.Z, for example '0.1.0'" % app_version)
+    if publish:
+        if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
+            errors.append("the release's tag %r is not vX.Y.Z (for example v0.1.0): make a release with such a tag" % tag)
+        elif app_version is not None and app_version != tag[1:]:
+            errors.append("app.py has APP_VERSION = %r but the release's tag is %s: they must match (the app's update "
+                          "check compares the two), so make the release with the tag v%s" % (app_version, tag, app_version))
+    version = tag[1:] if publish else (app_version or '')
+    print('release:', tag or '- (test build)', '| APP_VERSION:', app_version, '| --selftest:', 'yes' if selftest else 'no',
+          '| files checked:', len(need))
+    with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+        f.write('publish=%s\nversion=%s\n' % ('true' if publish else 'false', version))
+    for e in errors:
+        print('::error title=Pre-flight::' + e)
+    sys.exit(1 if errors else 0)
+  # Reads a release from the GitHub API (argv[2], JSON) and finds its archives the way the app's updater does: named
+  # AFRestore-v<version>-win-x64.zip / AFRestore-v<version>-linux-x64.tar.gz with <version> = $VER (letter case
+  # ignored, v0.2 = v0.2.0). Two archives for one system (the app would refuse both) or one still uploading stop the run.
+  #   plan   sets build_windows=true when the release has no Windows zip, else windows_zip=<its name>; a Linux archive
+  #          under another name than the one this run attaches stops the run (there would be two)
+  #   final  one archive per system is on the release, and SHA256SUMS.txt (argv[3] = the file this run wrote) with
+  #          GitHub's digest of every .zip / .tar.gz equal to its line; the release's files go to the run summary
+  RELEASE_ASSETS_PY: |
+    import hashlib, json, os, re, sys
+    mode, path = sys.argv[1], sys.argv[2]
+    with open(path, encoding='utf-8') as f:
+        rel = json.load(f)
+    ver = os.environ['VER']
+
+
+    def numbers(v):
+        n = [int(x) for x in v.split('.')]
+        return tuple(n + [0] * (3 - len(n)))
+
+
+    exact = {'Windows': 'AFRestore-v%s-win-x64.zip' % ver, 'Linux': 'AFRestore-v%s-linux-x64.tar.gz' % ver}
+    assets = [a for a in rel.get('assets') or [] if isinstance(a, dict)]
+    found = {'Windows': [], 'Linux': []}
+    for a in assets:
+        m = re.fullmatch(r'afrestore-v([0-9]+\.[0-9]+(?:\.[0-9]+)?)-(win-x64\.zip|linux-x64\.tar\.gz)', str(a.get('name') or '').lower())
+        if m and numbers(m.group(1)) == numbers(ver):
+            found['Windows' if m.group(2) == 'win-x64.zip' else 'Linux'].append(a)
+    errors = []
+    for system, lst in found.items():
+        if len(lst) > 1:
+            errors.append('the release has %d %s archives for %s (%s): the app refuses them all, delete all but one'
+                          % (len(lst), system, ver, ', '.join(a['name'] for a in lst)))
+        for a in lst:
+            if a.get('state') != 'uploaded':
+                errors.append('%s is still being uploaded: wait until it is there, then run the workflow again' % a['name'])
+    if mode == 'plan':
+        for a in found['Linux']:
+            if a['name'] != exact['Linux']:
+                errors.append('the release has the Linux archive %s: delete it, this workflow attaches %s itself'
+                              % (a['name'], exact['Linux']))
+        for a in found['Windows']:
+            if a['name'] != exact['Windows']:
+                print('::warning title=Windows zip::the Windows zip is named %s, not %s' % (a['name'], exact['Windows']))
+        print('Windows zip on the release:', ', '.join(a['name'] for a in found['Windows']) or 'none, this run builds it')
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+            f.write('build_windows=%s\n' % ('false' if found['Windows'] else 'true'))
+            if len(found['Windows']) == 1:
+                f.write('windows_zip=%s\n' % found['Windows'][0]['name'])
+    else:
+        for system, lst in found.items():
+            if not lst:
+                errors.append('the release has no %s archive' % system)
+            for a in lst:
+                if not re.fullmatch(r'sha256:[0-9a-f]{64}', str(a.get('digest') or '')):
+                    print('::warning title=No digest::GitHub shows no sha256 digest for %s yet (the app downloads an '
+                          'archive only with one)' % a['name'])
+        with open(sys.argv[3], 'rb') as f:
+            raw = f.read()
+        want = 'sha256:' + hashlib.sha256(raw).hexdigest()
+        sums = [a for a in assets if a.get('name') == 'SHA256SUMS.txt']
+        if len(sums) != 1 or sums[0].get('digest') not in (want, None, ''):
+            errors.append('SHA256SUMS.txt on the release is not the one this run wrote')
+        lines = {}
+        for line in raw.decode('utf-8').splitlines():
+            h, _, n = line.partition('  ')
+            lines[n] = h
+        for a in assets:
+            name, digest = str(a.get('name') or ''), str(a.get('digest') or '')
+            if not re.search(r'\.(zip|tar\.gz)$', name):
+                continue
+            if name not in lines:
+                errors.append('%s is on the release but not in SHA256SUMS.txt (attached during this run?): run the '
+                              'workflow again' % name)
+            elif re.fullmatch(r'sha256:[0-9a-f]{64}', digest) and digest[7:] != lines[name]:
+                errors.append('%s on the release has sha256 %s, but SHA256SUMS.txt gives %s (replaced during this run?): '
+                              'run the workflow again' % (name, digest[7:], lines[name]))
+        rows = ['| File | Size | sha256 |', '|---|---:|---|']
+        rows += ['| %s | %d | `%s` |' % (a.get('name'), a.get('size') or 0, str(a.get('digest') or '-').replace('sha256:', ''))
+                 for a in sorted(assets, key=lambda a: str(a.get('name')))]
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+            f.write('### Files of release %s\n\n%s\n\n%s\n' % (os.environ.get('RELEASE_TAG', ''), '\n'.join(rows), rel.get('html_url', '')))
+        print('\n'.join(rows))
+    for e in errors:
+        print('::error title=Release files::' + e)
+    sys.exit(1 if errors else 0)
+  # Writes SHA256SUMS.txt ('<sha256>  <file name>' lines, sorted by name) for every .zip / .tar.gz the release holds
+  # once this run's archives are attached; it is attached BEFORE them, so the release never offers an archive that its
+  # SHA256SUMS.txt has no line for. argv: the release (API JSON), the folder with the release's files as downloaded,
+  # the folder with the archives this run attaches, the file to write. An archive this run attaches gets the line of the
+  # file it built (it replaces a file of the same name on the release); any other must have been downloaded with its
+  # size and GitHub's sha256 digest, and match its line in the SHA256SUMS.txt that was on the release, when that file
+  # has one (otherwise the release holds another file than the one the checksum was made for: stop).
+  SUMS_PY: |
+    import hashlib, json, os, re, sys
+    rel_path, dl, new, out = sys.argv[1:5]
+
+
+    def sha256(path):
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+
+    with open(rel_path, encoding='utf-8') as f:
+        rel = json.load(f)
+    archives = {a['name']: a for a in rel.get('assets') or [] if isinstance(a, dict)
+                and re.search(r'\.(zip|tar\.gz)$', str(a.get('name') or ''))}
+    built = {n: sha256(os.path.join(new, n)) for n in os.listdir(new)}
+    old = {}
+    if os.path.isfile(os.path.join(dl, 'SHA256SUMS.txt')):
+        with open(os.path.join(dl, 'SHA256SUMS.txt'), encoding='utf-8-sig', errors='replace') as f:
+            for raw in f.read().splitlines():
+                m = re.fullmatch(r'([0-9A-Fa-f]{64}) [ *](.+?)\s*', raw)
+                if m:
+                    old[m.group(2)] = m.group(1).lower()
+                elif raw.strip():
+                    print('::warning title=SHA256SUMS::a line of the earlier SHA256SUMS.txt is not understood: %r' % raw)
+    errors, lines = [], []
+    for name in sorted(set(archives) | set(built)):
+        if name in built:
+            lines.append('%s  %s\n' % (built[name], name))
+            continue
+        a = archives[name]
+        path = os.path.join(dl, name)
+        if a.get('state') != 'uploaded' or not os.path.isfile(path):
+            errors.append('%s could not be downloaded (still being uploaded?)' % name)
+            continue
+        h = sha256(path)
+        if os.path.getsize(path) != a.get('size'):
+            errors.append('%s: %d bytes downloaded, GitHub shows %s' % (name, os.path.getsize(path), a.get('size')))
+        digest = str(a.get('digest') or '')
+        if re.fullmatch(r'sha256:[0-9a-f]{64}', digest) and digest[7:] != h:
+            errors.append('%s: the download has sha256 %s, GitHub shows %s' % (name, h, digest[7:]))
+        if name in old and old[name] != h:
+            errors.append('%s: the SHA256SUMS.txt on the release gives %s, but the file on the release has %s. Attach '
+                          'the zip and SHA256SUMS.txt from the same folder again (or delete SHA256SUMS.txt on the '
+                          'release: the workflow writes it again), then run the workflow again (Actions, Release, Run '
+                          'workflow, tag %s)' % (name, old[name], h, os.environ.get('RELEASE_TAG', '')))
+        lines.append('%s  %s\n' % (h, name))
+    for n in sorted(set(old) - set(archives) - set(built)):
+        print('::notice title=SHA256SUMS::the line for %s is dropped: no such file on the release' % n)
+    if not lines:
+        errors.append('the release has no .zip or .tar.gz file')
+    for e in errors:
+        print('::error title=SHA256SUMS::' + e)
+    if errors:
+        sys.exit(1)
+    with open(out, 'w', encoding='utf-8', newline='\n') as f:
+        f.writelines(lines)
+    print(''.join(lines), end='')
+  # The release notes: the CHANGELOG.md section headed '## <version> ...' (awk -v v=<version>), without the heading and
+  # without blank lines around it.
+  NOTES_AWK: |
+    { sub(/\r$/, "") }
+    /^## / { if (found) exit; if (index($0, "## " v " ") == 1 || $0 == "## " v) found = 1; next }
+    found { line[++n] = $0 }
+    END {
+      first = 1; while (first <= n && line[first] ~ /^[ \t]*$/) first++
+      last = n; while (last >= first && line[last] ~ /^[ \t]*$/) last--
+      for (i = first; i <= last; i++) print line[i]
+    }
+  # Lists a one-file program's archive (without running it) and checks that its entry script (argv[3]), the hidden
+  # imports and DATA_FILES (in data/) of its spec (argv[2]), omsig_data.txt and Tcl/Tk (shared libraries + script
+  # libraries) are inside.
+  CHECK_FROZEN_PY: |
+    import ast, os, re, subprocess, sys
+    exe, spec_path, entry = sys.argv[1:4]
+    listing = subprocess.run(
+        [sys.executable, '-I', '-B', '-m', 'PyInstaller.utils.cliutils.archive_viewer', '-r', '-b', exe],
+        capture_output=True, text=True, check=True).stdout
+    names = {line.strip().replace('\\', '/') for line in listing.splitlines() if line.startswith(' ')}
+    lists = {}
+    with open(spec_path, encoding='utf-8') as f:
+        spec = ast.parse(f.read(), spec_path)
+    for node in ast.walk(spec):
+        if isinstance(node, ast.keyword) and node.arg == 'hiddenimports':
+            lists['hiddenimports'] = list(ast.literal_eval(node.value))
+        elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'DATA_FILES' for t in node.targets):
+            lists['DATA_FILES'] = list(ast.literal_eval(node.value))
+    if sorted(lists) != ['DATA_FILES', 'hiddenimports']:
+        sys.exit('%s: no hiddenimports or DATA_FILES list' % spec_path)
+    want = [entry] + lists['hiddenimports'] + ['data/' + n for n in lists['DATA_FILES']] + ['omsig_data.txt']
+    want += ['tkinter', 'pyi_rth__tkinter', '_tcl_data/init.tcl', '_tk_data/tk.tcl', '_tk_data/ttk/ttk.tcl']
+    missing = [n for n in want if n not in names]
+    for label, pattern in (('_tkinter extension', r'(^|/)_tkinter\..*(pyd|so)$'),
+                           ('Tcl shared library', r'(^|/)(tcl86t\.dll|libtcl8\.6\.so[.0-9]*)$'),
+                           ('Tk shared library', r'(^|/)(tk86t\.dll|libtk8\.6\.so[.0-9]*)$')):
+        if not any(re.search(pattern, n) for n in names):
+            missing.append(label)
+    print(exe, os.path.getsize(exe), 'bytes,', len(names), 'archive entries,', len(want) + 3, 'checked')
+    if missing:
+        sys.exit('missing from %s: %s' % (exe, ', '.join(missing)))
+    print('OK: entry script, data files, builder modules and Tcl/Tk are bundled')
+  # Starts a frozen program once with --selftest ($1 = the program). The flag must open no window, write no files and
+  # exit by itself (0 = OK; it prints SELFTEST OK, or SELFTEST FAILED and the traceback). The Windows programs are
+  # windowed: an uncaught exception there opens a modal error box that nobody can close on a runner, so the run is cut
+  # off after 120 s instead of waiting for the step timeout.
+  SELFTEST_SH: |
+    exe=$1 rc=0
+    /usr/bin/timeout -k 10 120 "$exe" --selftest || rc=$?
+    case $rc in
+      0) echo "$exe --selftest exited 0" ;;
+      124|137) echo "::error title=Smoke run::$exe --selftest did not exit within 120 s (an uncaught exception in a windowed program opens an error box; --selftest must catch everything and exit non-zero)"; exit 1 ;;
+      *) echo "::error title=Smoke run::$exe --selftest exited with code $rc"; exit 1 ;;
+    esac
+  # Packs the programs (argv[2:]) into the new zip argv[1], each at the top level under its own file name and nothing
+  # else, and reads it back. The app's updater takes exactly these names from the release's zip.
+  MAKE_ZIP_PY: |
+    import os, sys, zipfile
+    out, programs = sys.argv[1], sys.argv[2:]
+    names = [os.path.basename(p) for p in programs]
+    with zipfile.ZipFile(out, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for p, n in zip(programs, names):
+            z.write(p, arcname=n)
+    with zipfile.ZipFile(out) as z:
+        infos, bad = z.infolist(), z.testzip()
+    if [i.filename for i in infos] != names or bad is not None or any(i.is_dir() for i in infos) or \
+            [i.file_size for i in infos] != [os.path.getsize(p) for p in programs]:
+        sys.exit('%s is not right: %r (bad member: %r)' % (out, [(i.filename, i.file_size) for i in infos], bad))
+    print(out, os.path.getsize(out), 'bytes:', ', '.join('%s (%d bytes)' % (i.filename, i.file_size) for i in infos))
+  # Checks a Windows zip (argv[1]) the way the app's update opens it: exactly AFRestore.exe and AFRestore Scene
+  # Tester.exe at its top level and nothing else, each a whole Windows program built by PyInstaller ('MZ' at the start,
+  # PyInstaller's marker in its last 64 KiB, 1-500 MB). With argv[2] (a folder) and argv[3] (the release's version),
+  # on Windows: the two programs are copied into that folder and started once with --selftest (no window, 120 s), and
+  # each must print 'SELFTEST OK <version>'. Anything else stops the run before a file is attached.
+  CHECK_ZIP_PY: |
+    import os, shutil, subprocess, sys, zipfile
+    PROGRAMS = ['AFRestore.exe', 'AFRestore Scene Tester.exe']
+    MAGIC = b'MEI\x0c\x0b\x0a\x0b\x0e'
+    path, out, ver = (sys.argv[1:] + [None, None])[:3]
+    name = os.path.basename(path)
+
+
+    def stop(problem):
+        print("::error title=Windows zip::%s: %s The app's update takes exactly the two programs %s from the zip, so "
+              "put the two programs of one build (not their folder) into a new zip, attach it to the release in place "
+              "of this one, delete SHA256SUMS.txt there (the workflow writes it again), then run the workflow again "
+              "(Actions, Release, Run workflow, tag %s). BUILDING.md says how to make the zip."
+              % (name, problem, ' and '.join(PROGRAMS), os.environ.get('RELEASE_TAG', '')))
+        sys.exit(1)
+
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            names = [i.filename for i in infos]
+            if sorted(names) != sorted(PROGRAMS):
+                stop('it holds %s.' % ', '.join(repr(n) for n in names))
+            bad = z.testzip()
+            if bad is not None:
+                stop('%s in it is damaged (CRC error).' % bad)
+            for i in infos:
+                if not 1_000_000 <= i.file_size <= 500_000_000:
+                    stop('%s in it has an unexpected size (%d bytes).' % (i.filename, i.file_size))
+                with z.open(i) as src:
+                    head, tail = src.read(2), b''
+                    for chunk in iter(lambda: src.read(1 << 20), b''):
+                        tail = (tail + chunk)[-65536:]
+                if head != b'MZ' or MAGIC not in tail:
+                    stop('%s in it is not a Windows program built by PyInstaller.' % i.filename)
+                if out:
+                    os.makedirs(out, exist_ok=True)
+                    with z.open(i) as src, open(os.path.join(out, i.filename), 'wb') as dst:
+                        shutil.copyfileobj(src, dst, 1 << 20)
+                print('%s: %s, %d bytes: OK' % (name, i.filename, i.file_size))
+    except Exception as e:                   # not a zip, encrypted, unknown compression, cannot be written out
+        stop('it cannot be opened (%s: %s).' % (e.__class__.__name__, e))
+    for n in PROGRAMS if out else ():
+        try:
+            p = subprocess.run([os.path.join(out, n), '--selftest'], stdin=subprocess.DEVNULL, capture_output=True,
+                               text=True, errors='replace', timeout=120, creationflags=0x08000000 if os.name == 'nt' else 0)
+        except subprocess.TimeoutExpired:
+            stop('%s --selftest did not exit within 120 s.' % n)
+        printed = p.stdout.replace('\r', '').splitlines()
+        print('%s --selftest: exit %d, %s' % (n, p.returncode, ' | '.join(printed) or 'nothing printed'))
+        if p.stderr.strip():
+            print(p.stderr.rstrip())
+        if p.returncode != 0 or 'SELFTEST OK %s' % ver not in printed:
+            stop('%s --selftest exited %d without printing "SELFTEST OK %s": it is not a working version %s of the '
+                 'program (build both programs from the files of the release\'s tag).' % (n, p.returncode, ver, ver))
+
+jobs:
+  preflight:
+    name: Pre-flight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      version: ${{ steps.check.outputs.version }}
+      build_windows: ${{ steps.release.outputs.build_windows }}
+      windows_zip: ${{ steps.release.outputs.windows_zip }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Syntax check *.py
+        run: |
+          shopt -s nullglob
+          python3 -I -B - *.py <<<"$CHECK_SOURCES_PY"
+
+      - name: Pre-flight checks (files, spec paths, release tag = APP_VERSION, --selftest)
+        id: check
+        run: python3 -I -B - <<<"$PREFLIGHT_PY"
+
+      - name: Look at the release (is the Windows zip there?)
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PUBLISH: ${{ steps.check.outputs.publish }}
+          VER: ${{ steps.check.outputs.version }}
+        run: |
+          if [ "$PUBLISH" != true ]; then
+            echo "Test build: both archives are built, no release is touched."
+            echo build_windows=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json"; then
+            echo "::error title=No release::There is no published release with the tag $RELEASE_TAG. Publish the release on the website first, or run the workflow with the right tag."
+            exit 1
+          fi
+          python3 -I -B - plan "$RUNNER_TEMP/release.json" <<<"$RELEASE_ASSETS_PY"
+
+  linux:
+    name: Linux x64 (both programs)
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container:
+      # AlmaLinux 8 (RHEL 8 rebuild, security updates until 2029), glibc 2.28: the programs run on Steam Deck (SteamOS 3)
+      # and most desktop Linux. Python 3.12, Tcl/Tk 8.6 and OpenSSL come from AlmaLinux's signed packages and are brought
+      # up to date in the first step, so each release bundles the current fixes (the bundled OpenSSL carries the app's
+      # update check). The digest only pins the starting image (almalinux:8 of 2026-10-27).
+      image: almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b
+    env:
+      ARCHIVE: AFRestore-v${{ needs.preflight.outputs.version }}-linux-x64.tar.gz
+    steps:
+      - name: Install Python 3.12, Tcl/Tk and build tools (dnf)
+        run: |
+          dnf -y --refresh upgrade
+          dnf -y install --setopt=install_weak_deps=False \
+            python3.12 python3.12-tkinter python3.12-pip python3.12-pip-wheel binutils git-core tar gzip
+          { echo '```'; rpm -q glibc openssl-libs python3.12 python3.12-tkinter tcl tk; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          python3.12 -m venv /opt/build-venv
+          echo /opt/build-venv/bin >> "$GITHUB_PATH"
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Check toolchain (glibc, Python, Tcl/Tk, OpenSSL)
+        run: |
+          python -I -B - <<'EOF'
+          import os, platform, ssl, sys, sysconfig, tkinter
+          lib, ver = platform.libc_ver()
+          print('Python', sys.version.split()[0], '|', lib, ver, '|', ssl.OPENSSL_VERSION)
+          if sys.version_info[:2] != (3, 12):
+              sys.exit('need Python 3.12')
+          if lib != 'glibc' or tuple(int(x) for x in ver.split('.')[:2]) > (2, 31):
+              sys.exit('need glibc <= 2.31 so the programs run on older systems')
+          if not sysconfig.get_config_var('Py_ENABLE_SHARED'):
+              sys.exit('PyInstaller needs a Python with a shared libpython')
+          tcl = tkinter.Tcl()
+          tcl_dir = tcl.eval('info library')
+          tk_dir = os.path.join(os.path.dirname(tcl_dir), 'tk%s' % tkinter.TkVersion)
+          print('Tcl', tcl.eval('info patchlevel'), tcl_dir, '| Tk', tkinter.TkVersion, tk_dir)
+          for need in (os.path.join(tcl_dir, 'init.tcl'), os.path.join(tk_dir, 'tk.tcl')):
+              if not os.path.isfile(need):
+                  sys.exit('missing ' + need)
+          EOF
+
+      - name: Install PyInstaller (hash-pinned)
+        run: |
+          printf '%s\n' "$BUILD_REQUIREMENTS" > "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip check
+          echo "PyInstaller $(python -m PyInstaller --version)"
+
+      - name: Build dist/AFRestore and dist/AFRestoreSceneTester
+        run: |
+          python -m PyInstaller --noconfirm AFRestore.spec
+          python -m PyInstaller --noconfirm AFRestoreSceneTester.spec
+
+      - name: Check the frozen programs
+        run: |
+          python -I -B - dist/AFRestore AFRestore.spec app <<<"$CHECK_FROZEN_PY"
+          python -I -B - dist/AFRestoreSceneTester AFRestoreSceneTester.spec scenetester <<<"$CHECK_FROZEN_PY"
+
+      - name: Run both programs once (--selftest)
+        timeout-minutes: 6
+        run: |
+          bash -eo pipefail -c "$SELFTEST_SH" selftest ./dist/AFRestore
+          bash -eo pipefail -c "$SELFTEST_SH" selftest ./dist/AFRestoreSceneTester
+
+      - name: Pack ${{ env.ARCHIVE }}
+        run: |
+          chmod 0755 dist/AFRestore dist/AFRestoreSceneTester
+          tar -C dist --owner=0 --group=0 --numeric-owner --mode=0755 -czf "$ARCHIVE" AFRestore AFRestoreSceneTester
+          tar -tvzf "$ARCHIVE"
+          test "$(tar -tzf "$ARCHIVE" | tr '\n' ' ')" = "AFRestore AFRestoreSceneTester "
+          test "$(tar -tvzf "$ARCHIVE" | cut -c1-10 | sort -u)" = "-rwxr-xr-x"
+          sha256sum "$ARCHIVE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the archive (run artifact)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: AFRestore-linux-x64
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64 (both programs)
+    needs: preflight
+    # only when the release has no Windows zip yet (the owner usually attaches the one built on their PC); always for a
+    # test build
+    if: needs.preflight.outputs.build_windows == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      ARCHIVE: AFRestore-v${{ needs.preflight.outputs.version }}-win-x64.zip
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller (hash-pinned)
+        run: |
+          printf '%s\n' "$BUILD_REQUIREMENTS" > "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip check
+          echo "PyInstaller $(python -m PyInstaller --version)"
+
+      - name: Build dist/AFRestore.exe and dist/AFRestore Scene Tester.exe
+        run: |
+          python -m PyInstaller --noconfirm AFRestore.spec
+          python -m PyInstaller --noconfirm AFRestoreSceneTester.spec
+
+      - name: Check the frozen programs
+        run: |
+          python -I -B - dist/AFRestore.exe AFRestore.spec app <<<"$CHECK_FROZEN_PY"
+          python -I -B - "dist/AFRestore Scene Tester.exe" AFRestoreSceneTester.spec scenetester <<<"$CHECK_FROZEN_PY"
+
+      - name: Run both programs once (--selftest)
+        timeout-minutes: 6
+        run: |
+          bash -eo pipefail -c "$SELFTEST_SH" selftest ./dist/AFRestore.exe
+          bash -eo pipefail -c "$SELFTEST_SH" selftest "./dist/AFRestore Scene Tester.exe"
+
+      - name: Pack ${{ env.ARCHIVE }}
+        run: |
+          python -I -B - "$ARCHIVE" dist/AFRestore.exe "dist/AFRestore Scene Tester.exe" <<<"$MAKE_ZIP_PY"
+          sha256sum "$ARCHIVE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the archive (run artifact)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: AFRestore-win-x64
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 14
+
+  windows_zip:
+    name: Windows zip of the release (check)
+    needs: preflight
+    # the release has its Windows zip (attached by hand): it is opened the way the app's update opens it, and both
+    # programs are started once (--selftest) and must say they are the release's version
+    if: needs.preflight.outputs.build_windows == 'false'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VER: ${{ needs.preflight.outputs.version }}
+      ZIP: ${{ needs.preflight.outputs.windows_zip }}
+    steps:
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Download ${{ env.ZIP }} from the release
+        run: |
+          mkdir -p "$RUNNER_TEMP/zip"
+          gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/zip" --pattern "$ZIP"
+
+      - name: Check the zip and run both programs once (--selftest)
+        timeout-minutes: 8
+        run: python -I -B - "$RUNNER_TEMP/zip/$ZIP" "$RUNNER_TEMP/programs" "$VER" <<<"$CHECK_ZIP_PY"
+
+  publish:
+    name: Complete the release
+    needs: [preflight, linux, windows, windows_zip]
+    # a release run whose builds passed; the Windows build is skipped when the release already has its zip, which must
+    # then have passed its check
+    if: >-
+      !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.publish == 'true' &&
+      needs.linux.result == 'success' && (needs.windows.result == 'success' ||
+      (needs.windows.result == 'skipped' && needs.preflight.outputs.build_windows == 'false' &&
+      needs.windows_zip.result == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VER: ${{ needs.preflight.outputs.version }}
+      WINDOWS_BUILT: ${{ needs.windows.result == 'success' }}
+      WINDOWS_ZIP: ${{ needs.preflight.outputs.windows_zip }}
+    steps:
+      - name: Check out (for CHANGELOG.md)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Get the archives built by this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: AFRestore-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/new
+
+      - name: Check the archives built by this run
+        run: |
+          expected=("AFRestore-v$VER-linux-x64.tar.gz")
+          if [ "$WINDOWS_BUILT" = true ]; then expected+=("AFRestore-v$VER-win-x64.zip"); fi
+          cd "$RUNNER_TEMP/new"
+          ls -l
+          got=$(find . -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+          want=$(printf '%s\n' "${expected[@]}" | LC_ALL=C sort)
+          if [ "$got" != "$want" ]; then
+            echo "::error title=Archives::this run built [$got], expected [$want]"
+            exit 1
+          fi
+
+      - name: Check the Windows zip, write SHA256SUMS.txt (every .zip and .tar.gz the release will hold)
+        run: |
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/release.json"
+          mkdir "$RUNNER_TEMP/dl" "$RUNNER_TEMP/out"
+          n=$(python3 -I -B -c 'import json, sys; print(sum(1 for a in json.load(open(sys.argv[1]))["assets"] if a["name"].endswith((".zip", ".tar.gz")) or a["name"] == "SHA256SUMS.txt"))' "$RUNNER_TEMP/release.json")
+          if [ "$n" -gt 0 ]; then
+            gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/dl" --pattern '*.zip' --pattern '*.tar.gz' --pattern 'SHA256SUMS.txt'
+          fi
+          ls -l "$RUNNER_TEMP/dl"
+          if [ "$WINDOWS_BUILT" = true ]; then zip="$RUNNER_TEMP/new/AFRestore-v$VER-win-x64.zip"; else zip="$RUNNER_TEMP/dl/$WINDOWS_ZIP"; fi
+          python3 -I -B - "$zip" <<<"$CHECK_ZIP_PY"
+          python3 -I -B - "$RUNNER_TEMP/release.json" "$RUNNER_TEMP/dl" "$RUNNER_TEMP/new" "$RUNNER_TEMP/out/SHA256SUMS.txt" <<<"$SUMS_PY"
+          { echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # SHA256SUMS.txt first: while the archives are being attached, the release never offers an archive that its
+      # SHA256SUMS.txt has no line for (the app's update would refuse it)
+      - name: Attach SHA256SUMS.txt, then the archives (replacing files with the same name)
+        run: |
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/out/SHA256SUMS.txt" --clobber
+          files=("AFRestore-v$VER-linux-x64.tar.gz")
+          if [ "$WINDOWS_BUILT" = true ]; then files+=("AFRestore-v$VER-win-x64.zip"); fi
+          cd "$RUNNER_TEMP/new"
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+
+      - name: Attach RELEASE_NOTES_v${{ needs.preflight.outputs.version }}.md (only when missing)
+        run: |
+          notes="RELEASE_NOTES_v$VER.md"
+          names=$(gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq '.assets[].name')
+          if grep -Fxq -- "$notes" <<<"$names"; then
+            echo "$notes is already on the release: left as it is."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/notes"
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$VER" "$NOTES_AWK" CHANGELOG.md > "$RUNNER_TEMP/notes/$notes"
+          fi
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes/$notes" 2>/dev/null; then
+            echo "::warning title=Release notes::CHANGELOG.md has no '## $VER' section: $notes is not attached"
+            exit 0
+          fi
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/notes/$notes"
+
+      - name: Check the release's files
+        run: |
+          gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/final.json"
+          python3 -I -B - final "$RUNNER_TEMP/final.json" "$RUNNER_TEMP/out/SHA256SUMS.txt" <<<"$RELEASE_ASSETS_PY"
