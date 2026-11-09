@@ -1,0 +1,354 @@
+# Builds the launcher for Windows and Linux and attaches both files to the GitHub release of the tag.
+# How to cut a release: see BUILDING.md.
+#
+#   push of a tag v*           -> build both, then create the release (or replace the files on an existing one)
+#   Run workflow, tag empty    -> test build of the branch or tag picked in "Use workflow from": both files are kept
+#                                 as run artifacts and no release is ever touched
+#   Run workflow, tag vX.Y.Z   -> build that existing tag and (re)publish its release files
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (e.g. v1.0.1). Leave empty for a test build without a release.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Git ref to build: the dispatched tag if one was given, else the ref that started the run.
+  BUILD_REF: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  # 'true' only when this run publishes: a pushed v* tag, or Run workflow with a tag entered. A manual run with the
+  # tag left empty is a test build even when started from a tag. (The release job's if: repeats this expression.)
+  PUBLISH: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.tag != '' }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  # PyInstaller and everything it installs, pinned by version and SHA-256 of the wheel (pip --require-hashes,
+  # wheels only), so the release files are built from exactly these packages. To update one, take the version and the
+  # wheel's sha256 from https://pypi.org/project/<name>/<version>/#files; pip refuses to install if a dependency is
+  # missing from this list.
+  BUILD_REQUIREMENTS: |
+    pyinstaller==6.22.3 \
+        --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b \
+        --hash=sha256:451a4ae14b719365bf1a2f0a99dae7b3463060061c3a394c70d5264cfb439528
+    pyinstaller-hooks-contrib==2026.9 \
+        --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
+    altgraph==0.17.5 \
+        --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+    packaging==26.3 \
+        --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+    setuptools==84.2.1 \
+        --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+    pefile==2024.8.26 ; sys_platform == "win32" \
+        --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+    pywin32-ctypes==0.2.3 ; sys_platform == "win32" \
+        --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+  # Syntax check: parses every file named on the command line; nothing is imported or run.
+  CHECK_SOURCES_PY: |
+    import ast, sys
+    files = sys.argv[1:]
+    if not files:
+        sys.exit('no source files given')
+    for path in files:
+        with open(path, 'rb') as f:
+            ast.parse(f.read(), path)
+    print('syntax OK:', len(files), 'files')
+  # Before anything is installed or built. Always: src/AFRestore.spec has no absolute paths. When publishing: the tag
+  # is vX.Y.Z[-suffix], src/app.py's APP_VERSION equals it (the app's update check compares the two) and src/app.py
+  # has --selftest. Sets the step output selftest=true|false.
+  PREFLIGHT_PY: |
+    import ast, os, re, sys
+    errors = []
+    publish = os.environ.get('PUBLISH') == 'true'
+    tag = os.environ.get('RELEASE_TAG', '')
+    with open('src/AFRestore.spec', encoding='utf-8') as f:
+        spec = ast.parse(f.read(), 'src/AFRestore.spec')
+    for node in sorted(ast.walk(spec), key=lambda n: (getattr(n, 'lineno', 0), getattr(n, 'col_offset', 0))):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.match(r'([A-Za-z]:)?[\\/]|~', node.value):
+            errors.append('src/AFRestore.spec line %d has the absolute path %r: build paths from SPECPATH (see BUILDING.md)'
+                          % (node.lineno, node.value))
+    with open('src/app.py', encoding='utf-8') as f:
+        app = ast.parse(f.read(), 'src/app.py')
+    app_version = None
+    for node in app.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'APP_VERSION' for t in node.targets):
+            v = node.value
+            app_version = v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else ast.unparse(v)
+    selftest = any(isinstance(n, ast.Constant) and n.value == '--selftest' for n in ast.walk(app))
+    if publish:
+        m = re.fullmatch(r'v(\d+\.\d+\.\d+)(-[0-9A-Za-z][0-9A-Za-z.-]*)?', tag)
+        if not m:
+            errors.append('release tag %r is not vX.Y.Z or vX.Y.Z-suffix' % tag)
+        elif app_version is None:
+            errors.append("src/app.py has no APP_VERSION = '...' line")
+        elif app_version not in ([m.group(1), tag[1:]] if m.group(2) else [m.group(1)]):
+            errors.append("src/app.py has APP_VERSION = %r but the tag is %s: set APP_VERSION = '%s' "
+                          "(the app's update check compares the two)" % (app_version, tag, m.group(1)))
+        if not selftest:
+            errors.append('src/app.py has no --selftest flag: a release needs the smoke run of the frozen app '
+                          '(see BUILDING.md)')
+    elif not selftest:
+        print('::notice title=Smoke run skipped::src/app.py has no --selftest flag, so the frozen app will not be '
+              'started. A release run stops here instead.')
+    print('publish:', publish, '| tag:', tag if publish else '-', '| APP_VERSION:', app_version,
+          '| --selftest:', 'yes' if selftest else 'no')
+    with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+        f.write('selftest=%s\n' % ('true' if selftest else 'false'))
+    for e in errors:
+        print('::error title=Pre-flight::' + e)
+    sys.exit(1 if errors else 0)
+  # Lists the one-file executable's archive (without running it) and checks that the spec's hidden imports,
+  # src/data/*, omsig_data.txt and Tcl/Tk (shared libraries + script libraries) are inside.
+  CHECK_FROZEN_PY: |
+    import ast, glob, os, re, subprocess, sys
+    exe = sys.argv[1]
+    listing = subprocess.run(
+        [sys.executable, '-I', '-B', '-m', 'PyInstaller.utils.cliutils.archive_viewer', '-r', '-b', exe],
+        capture_output=True, text=True, check=True).stdout
+    names = {line.strip().replace('\\', '/') for line in listing.splitlines() if line.startswith(' ')}
+    hidden = []
+    with open('src/AFRestore.spec', encoding='utf-8') as f:
+        spec = ast.parse(f.read())
+    for node in ast.walk(spec):
+        if isinstance(node, ast.keyword) and node.arg == 'hiddenimports':
+            try:
+                hidden = list(ast.literal_eval(node.value))
+            except ValueError:
+                print('::warning::hiddenimports in src/AFRestore.spec is not a literal list; not checked')
+    want = ['app'] + hidden
+    want += ['data/' + os.path.basename(p) for p in sorted(glob.glob('src/data/*')) if os.path.isfile(p)]
+    if os.path.isfile('src/omsig_data.txt'):
+        want.append('omsig_data.txt')
+    want += ['tkinter', 'pyi_rth__tkinter', '_tcl_data/init.tcl', '_tk_data/tk.tcl', '_tk_data/ttk/ttk.tcl']
+    missing = [n for n in want if n not in names]
+    for label, pattern in (('_tkinter extension', r'(^|/)_tkinter\..*(pyd|so)$'),
+                           ('Tcl shared library', r'(^|/)(tcl86t\.dll|libtcl8\.6\.so[.0-9]*)$'),
+                           ('Tk shared library', r'(^|/)(tk86t\.dll|libtk8\.6\.so[.0-9]*)$')):
+        if not any(re.search(pattern, n) for n in names):
+            missing.append(label)
+    print(exe, os.path.getsize(exe), 'bytes,', len(names), 'archive entries,', len(want) + 3, 'checked')
+    if missing:
+        sys.exit('missing from the frozen app: ' + ', '.join(missing))
+    print('OK: app data, builder modules and Tcl/Tk are bundled')
+  # Starts the frozen app once with --selftest ($1 = the executable). The flag must open no window, write no files
+  # and exit by itself (0 = OK; it prints SELFTEST OK, or SELFTEST FAILED and the traceback). The Windows exe is windowed: an uncaught exception there opens a modal error
+  # box that nobody can close on a runner, so the run is cut off after 120 s instead of waiting for the step timeout.
+  SELFTEST_SH: |
+    exe=$1 rc=0
+    /usr/bin/timeout -k 10 120 "$exe" --selftest || rc=$?
+    case $rc in
+      0) echo "$exe --selftest exited 0" ;;
+      124|137) echo "::error title=Smoke run::$exe --selftest did not exit within 120 s (an uncaught exception in the windowed exe opens an error box; --selftest must catch everything and exit non-zero)"; exit 1 ;;
+      *) echo "::error title=Smoke run::$exe --selftest exited with code $rc"; exit 1 ;;
+    esac
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Syntax check src/*.py
+        run: python -I -B - src/*.py <<<"$CHECK_SOURCES_PY"
+
+      - name: Pre-flight checks (spec paths; release tag, APP_VERSION, --selftest)
+        id: preflight
+        run: python -I -B - <<<"$PREFLIGHT_PY"
+
+      - name: Install PyInstaller (hash-pinned)
+        run: |
+          printf '%s\n' "$BUILD_REQUIREMENTS" > "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip check
+          echo "PyInstaller $(python -m PyInstaller --version)"
+
+      - name: Build dist/AFRestore.exe
+        run: python -m PyInstaller --noconfirm src/AFRestore.spec
+
+      - name: Check the frozen app
+        run: python -I -B - dist/AFRestore.exe <<<"$CHECK_FROZEN_PY"
+
+      - name: Run the frozen app (--selftest)
+        if: steps.preflight.outputs.selftest == 'true'
+        timeout-minutes: 4
+        run: bash -eo pipefail -c "$SELFTEST_SH" selftest ./dist/AFRestore.exe
+
+      - name: Checksum
+        run: sha256sum dist/AFRestore.exe | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: AFRestore-windows-x64
+          path: dist/AFRestore.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      # AlmaLinux 8 (RHEL 8 rebuild, security updates until 2029), glibc 2.28: the binary runs on Steam Deck (SteamOS 3)
+      # and most desktop Linux. Python 3.12, Tcl/Tk 8.6 and OpenSSL come from AlmaLinux's signed packages and are brought
+      # up to date in the first step, so each release bundles the current fixes (the bundled OpenSSL carries the app's
+      # update check). The digest only pins the starting image (almalinux:8 of 2026-10-27).
+      image: almalinux:8@sha256:2d0f2eb2a83cc09dbc2eb92fade4dbe8f709628149e81aa00aec70630406603b
+    steps:
+      - name: Install Python 3.12, Tcl/Tk and build tools (dnf)
+        run: |
+          dnf -y --refresh upgrade
+          dnf -y install --setopt=install_weak_deps=False \
+            python3.12 python3.12-tkinter python3.12-pip python3.12-pip-wheel binutils git-core tar gzip
+          { echo '```'; rpm -q glibc openssl-libs python3.12 python3.12-tkinter tcl tk; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          python3.12 -m venv /opt/build-venv
+          echo /opt/build-venv/bin >> "$GITHUB_PATH"
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Check toolchain (glibc, Python, Tcl/Tk, OpenSSL)
+        run: |
+          python -I -B - <<'EOF'
+          import os, platform, ssl, sys, sysconfig, tkinter
+          lib, ver = platform.libc_ver()
+          print('Python', sys.version.split()[0], '|', lib, ver, '|', ssl.OPENSSL_VERSION)
+          if sys.version_info[:2] != (3, 12):
+              sys.exit('need Python 3.12')
+          if lib != 'glibc' or tuple(int(x) for x in ver.split('.')[:2]) > (2, 31):
+              sys.exit('need glibc <= 2.31 so the binary runs on older systems')
+          if not sysconfig.get_config_var('Py_ENABLE_SHARED'):
+              sys.exit('PyInstaller needs a Python with a shared libpython')
+          tcl = tkinter.Tcl()
+          tcl_dir = tcl.eval('info library')
+          tk_dir = os.path.join(os.path.dirname(tcl_dir), 'tk%s' % tkinter.TkVersion)
+          print('Tcl', tcl.eval('info patchlevel'), tcl_dir, '| Tk', tkinter.TkVersion, tk_dir)
+          for need in (os.path.join(tcl_dir, 'init.tcl'), os.path.join(tk_dir, 'tk.tcl')):
+              if not os.path.isfile(need):
+                  sys.exit('missing ' + need)
+          EOF
+
+      - name: Syntax check src/*.py
+        run: python -I -B - src/*.py <<<"$CHECK_SOURCES_PY"
+
+      - name: Pre-flight checks (spec paths; release tag, APP_VERSION, --selftest)
+        id: preflight
+        run: python -I -B - <<<"$PREFLIGHT_PY"
+
+      - name: Install PyInstaller (hash-pinned)
+        run: |
+          printf '%s\n' "$BUILD_REQUIREMENTS" > "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes --only-binary=:all: -r "$RUNNER_TEMP/build-requirements.txt"
+          python -m pip check
+          echo "PyInstaller $(python -m PyInstaller --version)"
+
+      - name: Build dist/AFRestore
+        run: python -m PyInstaller --noconfirm src/AFRestore.spec
+
+      - name: Check the frozen app
+        run: python -I -B - dist/AFRestore <<<"$CHECK_FROZEN_PY"
+
+      - name: Run the frozen app (--selftest)
+        if: steps.preflight.outputs.selftest == 'true'
+        timeout-minutes: 4
+        run: bash -eo pipefail -c "$SELFTEST_SH" selftest ./dist/AFRestore
+
+      - name: Package AFRestore-linux-x86_64.tar.gz
+        run: |
+          chmod 0755 dist/AFRestore
+          tar -C dist --owner=0 --group=0 --numeric-owner -czf AFRestore-linux-x86_64.tar.gz AFRestore
+          tar -tvzf AFRestore-linux-x86_64.tar.gz
+          test "$(tar -tzf AFRestore-linux-x86_64.tar.gz)" = "AFRestore"
+          test "$(tar -tvzf AFRestore-linux-x86_64.tar.gz | cut -c1-10)" = "-rwxr-xr-x"
+          sha256sum AFRestore-linux-x86_64.tar.gz | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: AFRestore-linux-x86_64
+          path: AFRestore-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: [windows, linux]
+    # Same condition as env.PUBLISH (the env context is not available in a job's if:).
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out (for CHANGELOG.md)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILD_REF }}
+          persist-credentials: false
+
+      - name: Download both builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: AFRestore-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::Not a release tag: $TAG (expected vX.Y.Z)"; exit 1 ;;
+          esac
+          assets=(release-assets/AFRestore.exe release-assets/AFRestore-linux-x86_64.tar.gz)
+          ls -l "${assets[@]}"
+          { echo "### $TAG"; echo '```'; (cd release-assets && sha256sum AFRestore.exe AFRestore-linux-x86_64.tar.gz); echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists: uploading the files (replacing files with the same name)."
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            # Release notes: the CHANGELOG.md section headed "## X.Y.Z ..." if there is one.
+            notes="$RUNNER_TEMP/notes.md"
+            awk -v v="${TAG#v}" '
+              /^## / { if (found) exit; if (index($0, "## " v " ") == 1 || $0 == "## " v) found = 1; next }
+              found { print }
+            ' CHANGELOG.md > "$notes" || true
+            if ! grep -q '[^[:space:]]' "$notes"; then
+              echo "Windows: AFRestore.exe. Linux x86_64 / Steam Deck: AFRestore-linux-x86_64.tar.gz. See README.md." > "$notes"
+            fi
+            flags=()
+            case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+            gh release create "$TAG" "${assets[@]}" --verify-tag --title "$TAG" --notes-file "$notes" "${flags[@]}"
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'

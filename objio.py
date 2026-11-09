@@ -13,10 +13,35 @@ KS = 0xE7B5D9F8
 M = 0xFFFFFFFF
 
 
+def sibling(path, suffix):
+    """path + suffix; on case-sensitive file systems also accepts a name that differs only in case
+    (ALTFABLE.RIO.002 next to altfable.rio, e.g. copied from a CD or a FAT stick)."""
+    p = path + suffix
+    if os.name == 'nt' or os.path.exists(p): return p
+    d, b = os.path.split(p); low = b.lower()
+    try:
+        for e in os.listdir(d or '.'):
+            if e.lower() == low: return os.path.join(d, e)
+    except OSError:
+        pass
+    return p
+
+
+_parts = {}       # archive path -> its part files; looked up once per process (a build never adds or removes parts)
+
+
 def parts(path):
-    ps = [path]; i = 2
-    while os.path.exists('%s.%03d' % (path, i)): ps.append('%s.%03d' % (path, i)); i += 1
-    return ps
+    """[path, path.002, path.003, ...] as far as they exist. Cached per path: read_at() asks for every read, and on
+    case-sensitive file systems each lookup of the missing last part would cost an os.listdir (sibling)."""
+    ps = _parts.get(path)
+    if ps is None:
+        ps = [path]; i = 2
+        while True:
+            p = sibling(path, '.%03d' % i)
+            if not os.path.exists(p): break
+            ps.append(p); i += 1
+        _parts[path] = ps
+    return list(ps)
 
 
 _sizes = {}
@@ -36,10 +61,11 @@ def read_at(path, pos, n):
     if pm_ and pos >= pm_[1]:
         with open(pm_[0], 'rb') as f:
             f.seek(pos - pm_[1]); return f.read(n)
-    ps = parts(path)
+    ps = _parts.get(path) or parts(path)         # (the cached list itself: read_at only iterates it)
     out = b''
     for p in ps:
-        sz = _sizes.setdefault(p, os.path.getsize(p))
+        sz = _sizes.get(p)
+        if sz is None: sz = _sizes[p] = os.path.getsize(p)
         if pos < sz:
             with open(p, 'rb') as f:
                 f.seek(pos); chunk = f.read(min(n, sz - pos))
