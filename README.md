@@ -42,8 +42,6 @@ Click **Check for updates** in the launcher (it turns green when a new version i
 - The original, uncensored CGs, also in the scenes Photonmelodies kept
 - The Marimo-chan route, chosen in the island section's "who to spend time with" picker
 - Original voices, music, sound effects, backgrounds and sprites
-- The corrected text, voices and staging from âge's official update (`altfable.rio.ruo1`), when it is installed
-- Steam achievements keep working, and the other Photonmelodies stories stay untouched
 
 ## Status and support
 
