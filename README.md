@@ -33,7 +33,7 @@ Click **Check for updates** in the launcher (it turns green when a new version i
 
 - Windows 10 or 11, or 64-bit Linux (Steam Deck included)
 - Muv-Luv photonmelodies♮ on Steam, current version
-- Muv-Luv Altered Fable, 2007 PC release (DLsite / 20th BOX edition), the folder containing `altfable.rio`
+- Muv-Luv Altered Fable, 2007 PC release (DLsite), the folder containing `altfable.rio`
 - About 2.5 GB of free space on the drive with Photonmelodies
 
 ## Features
@@ -42,6 +42,7 @@ Click **Check for updates** in the launcher (it turns green when a new version i
 - The original, uncensored CGs, also in the scenes Photonmelodies kept
 - The Marimo-chan route, chosen in the island section's "who to spend time with" picker
 - Original voices, music, sound effects, backgrounds and sprites
+- Steam achievements work
 
 ## Screenshots
 
