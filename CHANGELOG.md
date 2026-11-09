@@ -1,6 +1,6 @@
 # Changelog
 
-Supported game versions are checked by file size and SHA-1 (`src/data/required.json`).
+Supported game versions are checked by file size and SHA-1 (`required.json`).
 
 ## 0.1.0 - 2026-11-09
 
@@ -47,12 +47,14 @@ Supported game versions are checked by file size and SHA-1 (`src/data/required.j
 - Saves: a save from the first release made inside a scene's lead-in may repeat a few lines or a camera move once,
   where the restored lines hand back to the game. *Skip read text* stops once on new or re-made lines (including the
   Kashiwagi lead-in conversation).
-- **Test a scene...**: pick a restored scene and play it right away (after the game's short prologue and opening
-  movie). Your saves are backed up first; **Back to normal** takes the scene out and puts your restored content and
-  saves back exactly as they were, also by itself when the game closes while the launcher is open (on by default).
+- **AFRestore Scene Tester**, a second program: pick a restored scene and play it right away (after the game's short
+  prologue and opening movie). Your saves are backed up first; **Back to normal** takes the scene out and puts your
+  restored content and saves back exactly as they were, also by itself when the game closes while the Scene Tester
+  is open (on by default). Only one of the two programs can be open at a time.
 - Rebuilds are faster: the re-encoded pictures are kept for the next build.
-- Linux and Steam Deck (Desktop Mode) build: `AFRestore-linux-x86_64.tar.gz`.
-- **Check for updates** button: downloads the new version, verifies it and restarts.
+- Downloads: `AFRestore-v0.1.0-win-x64.zip` for Windows and `AFRestore-v0.1.0-linux-x64.tar.gz` for Linux and the
+  Steam Deck (Desktop Mode), each with both programs.
+- **Check for updates** button: downloads the new version of both programs, verifies it and restarts.
 
 ## First release - 2026-10-11
 

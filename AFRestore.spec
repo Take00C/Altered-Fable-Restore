@@ -1,22 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Build: pyinstaller --noconfirm src/AFRestore.spec   (Python 3.12, pyinstaller 6.x)
-# Windows -> dist/AFRestore.exe; Linux -> dist/AFRestore (packed as AFRestore-linux-x86_64.tar.gz by the workflow).
-# Every path is built from SPECPATH (the folder of this file), so the spec works from any checkout and on both OSes.
-# Same content as app_src/AFRestore.spec, which uses absolute paths for the local build.
+# Build: pyinstaller --noconfirm AFRestore.spec   (Python 3.12, PyInstaller 6.22.3)
+# Windows -> dist/AFRestore.exe; Linux -> dist/AFRestore. The release workflow packs it together with the Scene Tester
+# (AFRestoreSceneTester.spec) into AFRestore-v<version>-win-x64.zip / AFRestore-v<version>-linux-x64.tar.gz.
+# The repository is flat: this spec, app.py, the builder modules and the data files sit side by side. Every path is
+# built from SPECPATH (the folder of this file), so the spec works from any checkout and on both OSes. The data files go
+# into the bundle's 'data' folder, where the frozen app reads them: the same bundle as app_src/AFRestore.spec, which
+# uses absolute paths for the local build. Keep AFRestoreSceneTester.spec in step.
 import os
 import sys
 WIN = sys.platform == 'win32'
 SRC = SPECPATH
+# The app's data files, bundled into 'data' (afrestore.ico: the Windows icon; afrestore.png: the window icon elsewhere
+# and the Scene Tester's side picture). Each one is named, so a missing file stops the build.
+DATA_FILES = ['heaps.json', 'objmap.json', 'required.json', 'sound_pairs.json', 'afrestore.ico', 'afrestore.png']
 
 
 a = Analysis(
     [os.path.join(SRC, 'app.py')],
     pathex=[SRC],
     binaries=[],
-    # data/ holds the window icons too (afrestore.ico for Windows, afrestore.png elsewhere); the PNG is also named
-    # explicitly so a missing icon file stops the build instead of shipping without it
-    datas=[(os.path.join(SRC, 'data'), 'data'), (os.path.join(SRC, 'omsig_data.txt'), '.'),
-           (os.path.join(SRC, 'data', 'afrestore.png'), 'data')],
+    datas=[(os.path.join(SRC, f), 'data') for f in DATA_FILES] + [(os.path.join(SRC, 'omsig_data.txt'), '.')],
     hiddenimports=['build_all', 'blocks', 'builder', 'scenes', 'align', 'objio', 'rsaparse', 'flow', 'crimp', 'oorparse', 'heapwriter', 'crsa', 'ruowrite', 'oscompat', 'entext', 'cgcrop', 'reencache', 'scenekit', 'scenetest_session'],
     hookspath=[],
     hooksconfig={},
@@ -46,5 +49,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(SRC, 'data', 'afrestore.ico') if WIN else None,     # exe icon: Windows only
+    icon=os.path.join(SRC, 'afrestore.ico') if WIN else None,     # exe icon: Windows only
 )

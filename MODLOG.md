@@ -1,6 +1,6 @@
 > Engineering journal kept while building this tool. Paths, lab scripts (`scripts/...`), decompiles and extracted
-> data it mentions belong to the private research setup and are **not** part of this repository; the app's code is in
-> `src/`. Offsets and function names refer to the current Steam build of Muv-Luv_PM.exe.
+> data it mentions belong to the private research setup and are **not** part of this repository; the app's code is the
+> `.py` files next to this journal. Offsets and function names refer to the current Steam build of Muv-Luv_PM.exe.
 
 # MODLOG: Altered Fable cut content -> Muv-Luv photonmelodies (Steam)
 
@@ -1322,3 +1322,97 @@ dist/AFRestore.exe 70bd9a66).
   `dist/old/AFRestore-1.1.0.exe`). Its frozen self-test prints SELFTEST OK 0.1.0. Archive compare with 70bd9a66: only
   the app script differs. The 16 builder modules and the data files are identical and equal to app_src, so it builds
   the same patch (default 2a64319d).
+
+## Release kit: separate Scene Tester, release files, flat repository (2026-11-09)
+
+The owner's decisions for the 0.1.0 upload: the scene test becomes a program of its own, Windows and Linux are
+separate downloads in the format of their other releases, and the public repository is flat because the GitHub website
+cannot upload folders. The builder is unchanged (build_all 893751c1, scenekit b6431894), so the patch is unchanged
+(default 2a64319d).
+
+- **AFRestore Scene Tester.** `scenetester.py` starts `app.py` in tester mode (`SCENE_TESTER`), so both programs
+  always have the same version and code. `AFRestoreSceneTester.spec` builds `AFRestore Scene Tester.exe` /
+  `AFRestoreSceneTester` with the same modules and data, plus `app` as a hidden import. The *Test a scene...* button
+  left Altered Fable Restore.
+  - Both programs share HOME and hold `HOME/running.lock` while they are open (Windows `msvcrt.locking`, Linux
+    `flock`), so only one of them runs at a time.
+  - While a test is installed, Altered Fable Restore refuses Rebuild and Turn OFF / ON and points to the tester's
+    *Back to normal*.
+  - The tester only installs a scene into content built by the same version (`built_with == APP_VERSION`).
+- **Release files:**
+  - `AFRestore-v<ver>-win-x64.zip`: both exes at the root.
+  - `AFRestore-v<ver>-linux-x64.tar.gz`: `AFRestore` and `AFRestoreSceneTester`, mode 755.
+  - `SHA256SUMS.txt`: `<sha256>  <file name>` lines.
+  - `RELEASE_NOTES_v<ver>.md`: the CHANGELOG section.
+- **Updater:**
+  - It takes only its system's archive named with the release's own version (numbers compared, letter case
+    ignored). GitHub's sha256 digest is required. The `SHA256SUMS.txt` line is checked when that file is there.
+  - It uses exactly the two program names at the archive root (`unpack_programs`) and swaps both programs, with a
+    rollback of both on any failure.
+  - A zip whose `AFRestore.exe` equals the running file is refused.
+- **Flat repository.** Every public file is at the top level; only `.github/workflows/release.yml` is in a folder,
+  and the owner creates it on the website by typing its path.
+  - The flat specs name the data files one by one (`DATA_FILES`) and still put them into the bundle's `data` folder.
+  - `app.py` reads `data/` when that folder holds `required.json`, otherwise its own folder. That is the only code
+    change.
+  - Built locally from the flat layout, both programs hold the same archive as the app_src builds, entry for entry.
+- **Workflow** (`release: published`, plus `workflow_dispatch` with a tag for re-runs):
+  - Pre-flight: every file the specs name is present, the specs have no absolute paths, the tag is `v` +
+    `APP_VERSION`, and `app.py` has `--selftest`.
+  - Linux (AlmaLinux 8, glibc 2.28): builds both programs, checks their archives, runs both with `--selftest`, and
+    packs the tar.gz.
+  - Windows: only when the release has no Windows zip.
+  - Publish (the only job with `contents: write`): uploads with `--clobber`, then downloads every `.zip` / `.tar.gz`
+    on the release. It checks them against GitHub's digests and the earlier `SHA256SUMS.txt`, rewrites that file, and
+    attaches the notes when they are missing.
+  - It never edits the release's title or text.
+  - Tested locally against a fake `gh`: YAML, embedded scripts, pack step, publish job (86/86). The action pins
+    match their tags.
+- **Exes:**
+  - `dist/AFRestore.exe` 59f8116f and `dist/AFRestore Scene Tester.exe` 84baae75. The previous exe (fdd990a1, with
+    the in-app scene test) is `dist/old/AFRestore-0.1.0-before-split.exe`.
+  - Archive compare with fdd990a1 and with 70bd9a66: only the app script differs. The 16 builder modules and the 7
+    data files equal app_src.
+  - The release files for the owner's upload are in `Github public release/`.
+
+## Release review fixes (2026-11-09)
+
+Three reviews of the release kit found eight small problems, and all of them are fixed. The builder is unchanged
+(build_all 893751c1, scenekit b6431894, scenetest_session 2d97dc98), so the patch is unchanged (default 2a64319d).
+
+- **Altered Fable Restore:** Rebuild and Turn OFF / ON read the scene test record again at the click. Before, they used
+  the state of the last refresh, so a test installed in the meantime was missed when the shared lock could not be taken.
+- **Scene Tester:**
+  - *Back to normal* with an unreadable record and no copy of it was a dead end. Altered Fable Restore refused Rebuild
+    and Turn OFF / ON while the record was there, and the tester could not clear it. After a warning, the tester now
+    sets the record aside (`session.json.unreadable`). It then says whether *Build & install* in Altered Fable Restore
+    is needed to get a clean file. The saves from before the test stay in the backup folder.
+  - Content built by a newer Altered Fable Restore: the note now says to use the Scene Tester from the same download.
+    It no longer asks for a rebuild, which would change nothing. For older content it adds that both programs must be
+    the same version.
+- **Updater:**
+  - A read-only program blocked every update after the first one. Its `.old` kept the attribute, so
+    `update_leftovers()` could not delete it and the helper's `move` could not overwrite it. The helper now deletes a
+    leftover `.old` first (`del /f`), and `update_leftovers()` clears the attribute before removing one.
+  - When `SHA256SUMS.txt` cannot be used, `download_update()` now checks the release once more before refusing the
+    update. The workflow rewrites that file right after a release is published.
+- **Workflow:**
+  - `SHA256SUMS.txt` is now written and attached before the archives, so the release never offers an archive without
+    its line. At the end, GitHub's digest of every archive must equal its line.
+  - A Windows zip attached by hand is now checked:
+    - the publish job checks that it holds exactly the two programs at its top level, each a PyInstaller exe
+      (`CHECK_ZIP_PY`);
+    - a new `windows_zip` job starts both programs once with `--selftest` on Windows and requires
+      `SELFTEST OK <tag version>`. Publishing waits for this job.
+- **Docs:**
+  - `BUILDING.md` now says how to make the zip and that the workflow writes `SHA256SUMS.txt`.
+  - It also says that a re-run builds the files of the release's tag, so only a fix to `release.yml` reaches a re-run.
+  - `HOW TO UPLOAD.txt` says what to do after a red cross.
+- **Checked:**
+  - Fake-GitHub updater tests: 158/158 on Windows (with the real cmd helper and read-only programs), 21/21 on Linux.
+  - GUI tests with the tk stub: Scene Tester 76/76 on Windows and 77/77 on Linux; Altered Fable Restore 76/76 on both.
+  - Self-tests: 60/60 on Windows, 52/52 on Linux. Regression 28/28. Specs 26/26. Flat source 22/22 and 20/20.
+  - Workflow tests against a fake `gh`: 114/114. The zip check with the real exes on Windows: 7/7.
+- **Exes:** `dist/AFRestore.exe` is 1c3bc30f and `dist/AFRestore Scene Tester.exe` is faae542a. Archive compare against
+  the previous build (59f8116f), the before-split exe and 1.1.0: only the app script differs. The 16 builder modules and
+  the 7 data files equal app_src.
