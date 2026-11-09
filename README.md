@@ -2,7 +2,7 @@
 
 Restores the content that was cut from **Muv-Luv Altered Fable** to **Muv-Luv photonmelodies♮** on
 Steam: the 18+ scenes, the uncensored CGs and the Marimo-chan route. The launcher builds everything from your own
-copies of both games. This launcher uses the dlsite version of **Muv-Luv Altered Fable** which you can find on the sukebei.nyaa.si site if you search "20thBOX Edition".
+copies of both games. This launcher uses the dlsite version of **Muv-Luv Altered Fable** which you can find on the sukebei.nyaa site if you search "20thBOX Edition".
 
 ## Download and play
 
