@@ -1,4 +1,4 @@
-# Altered Fable Restore
+# Altered Fable Restore (New update not released yet) 
 
 Restores the content that was cut from **Muv-Luv Altered Fable** to **Muv-Luv photonmelodies♮** on
 Steam: the 18+ scenes, the uncensored CGs and the Marimo-chan route. The launcher builds everything from your own
