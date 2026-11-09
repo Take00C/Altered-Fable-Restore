@@ -53,7 +53,7 @@ click **Rebuild & install**.
 
 <p align="center">
    <img width="48%" alt="Screenshot 2026-11-07 171028" src="https://github.com/user-attachments/assets/052b85e8-b8ab-4484-b7fc-134065c994d9" />
-   <img width="48%" alt="Screenshot 2026-11-09 044133" src="https://github.com/user-attachments/assets/6b2a55ff-00e5-4961-92fd-8d1369dd301b" />
+   <img width="48%" alt="Screenshot 2026-11-09 100430" src="https://github.com/user-attachments/assets/15ab10b3-aa43-4520-91c2-2e61c7e7309c" />
    <img width="48%" alt="Screenshot 2026-11-09 023605" src="https://github.com/user-attachments/assets/60d5fb4c-bdf5-4666-9f93-5797256d059a" />
    <img width="48%" height="632" alt="Screenshot 2026-11-09 022443" src="https://github.com/user-attachments/assets/25ad12df-13ac-4b4e-ad61-6d0af5ea3dea" />
 </p>
