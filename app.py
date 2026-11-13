@@ -20,7 +20,7 @@ too. The two programs share the settings folder (HOME) and are never open at the
 import sys
 
 APP = 'Altered Fable Restore'
-APP_VERSION = '0.1.0'                      # bump for every release; tag the GitHub release 'v' + APP_VERSION
+APP_VERSION = '0.1.1'                      # bump for every release; tag the GitHub release 'v' + APP_VERSION
 TESTER = 'AFRestore Scene Tester'
 # True when scenetester.py started this file (runpy init_globals): the window is the Scene Tester's
 SCENE_TESTER = bool(globals().get('SCENE_TESTER'))
@@ -1602,11 +1602,14 @@ def tester_gui():
         if st.get('built_with') != APP_VERSION:            # none: built by the first release (it had no number)
             built = version_tuple(st.get('built_with'))
             if built and built > version_tuple(APP_VERSION):
-                # a rebuild cannot help: that Altered Fable Restore writes its own version again
+                # usually the Scene Tester of an older download; a player who went back to this version on purpose
+                # rebuilds with this version's Altered Fable Restore instead
                 return ('The restored content was built by version %s of Altered Fable Restore, and this Scene Tester '
                         'is the older version %s. Use the Scene Tester that came with that Altered Fable Restore: '
-                        'keep both programs from the same download in the same folder.'
-                        % (st['built_with'], APP_VERSION))
+                        'keep both programs from the same download in the same folder. If you went back to version '
+                        '%s on purpose, %s Altered Fable Restore %s and click "Rebuild & install".'
+                        % (st['built_with'], APP_VERSION, APP_VERSION,
+                           'click "Back to normal", then open' if test else 'open', APP_VERSION))
             return ('The restored content was built by %s of Altered Fable Restore; this Scene Tester is version %s. '
                     '%s Altered Fable Restore and click "Rebuild & install". Both programs must be the same version: '
                     'keep them from the same download in the same folder.'
@@ -1852,7 +1855,8 @@ def tester_gui():
 # ---------------------------------------------------------------- --selftest (CI smoke run of the frozen app)
 # the builder modules bundled next to app.py (AFRestore.spec hiddenimports, minus build_all: importing it runs a build)
 BUNDLED = ('oscompat', 'objio', 'ruowrite', 'crsa', 'rsaparse', 'builder', 'heapwriter', 'blocks', 'scenes', 'align',
-           'flow', 'crimp', 'oorparse', 'entext', 'cgcrop', 'reencache', 'scenekit', 'scenetest_session')
+           'flow', 'crimp', 'oorparse', 'entext', 'cgcrop', 'galcg', 'reencache', 'scenekit',
+           'scenetest_session')
 # standard modules the app imports only inside functions (update download, Windows process lookup, the build)
 LAZY_STDLIB = ('zipfile', 'tarfile', 'posixpath', 'gzip', 'zlib', 'struct', 'runpy', 'importlib.util', 'ast', 'traceback') + \
               (('ctypes', 'ctypes.wintypes', 'winreg') if os.name == 'nt' else ())

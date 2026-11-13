@@ -1,11 +1,14 @@
-"""Disk cache for the builder's picture re-encodes (cgcrop.shrink of oversized billboard pictures, the CG re-crops).
+"""Disk cache for the builder's picture re-encodes (cgcrop.shrink of oversized billboard pictures, the CG re-crops, and
+galcg's gallery copies, gallery thumbnails and F28 story re-cuts).
 
 They are most of a build's time (pure-Python Opaque1 decode / encode: about 6-11 s per billboard picture, 3-4 s per
 re-crop) and their result depends only on their inputs. An entry is keyed by the sha1 of: the kind ('shrink' /
 'recrop'), its parameters, the sha1 of every input body, and the coder's identity (the sha1 of cgcrop.py's source;
 where no source file exists, e.g. inside the frozen app, the sha1 of cgcrop's compiled code and the Python version).
 So a hit returns exactly the bytes cgcrop would compute now, and the patch stays byte-identical with or without the
-cache (checked: no cache, cold cache and warm cache builds give the same sha1).
+cache (checked: no cache, cold cache and warm cache builds give the same sha1). The galcg kinds ('galcopy',
+'galthumb', 'recut2') add galcg's identity (the same rule on galcg.py) to the key; the 'shrink' / 'recrop' keys are
+unchanged, so the entries 0.1.0 made stay valid.
 
 Entries are written atomically (temp file + os.replace) and checked on every read (magic, format, payload sha1); a bad
 or unreadable entry is computed again and rewritten. finish() (end of a build) removes entries this build did not use
@@ -18,7 +21,7 @@ import os, sys, json, time, struct, hashlib
 FORMAT = 1
 MAGIC = b'AFRC'
 PRUNE_AFTER = 3600                  # seconds: entries unused by this build and older than this are removed by finish()
-_state = dict(hits=0, new=0, bad=0, used=set(), dir=None, code=None)
+_state = dict(hits=0, new=0, bad=0, used=set(), dir=None, code=None, galcode=None)
 
 
 def cache_dir():
@@ -63,6 +66,30 @@ def key_of(kind, params, inputs):
     for b in inputs:
         h.update(hashlib.sha1(b).digest())
     return h.hexdigest()
+
+
+def _gal_code_id():
+    """Identity of galcg: sha1 of galcg.py's source; where no source file exists (the frozen app), of the module's
+    whole compiled code (functions, classes and constants) and the Python version."""
+    if _state['galcode'] is None:
+        import galcg, marshal, importlib.util
+        h = hashlib.sha1(b'reencache galcg %d|' % FORMAT)
+        src = getattr(galcg, '__file__', None) or ''
+        try:
+            if not src.endswith('.py'): raise OSError('no source')
+            with open(src, 'rb') as f: h.update(b'src|' + f.read())
+        except OSError:
+            spec = importlib.util.find_spec('galcg')
+            code = spec.loader.get_code('galcg') if spec and hasattr(spec.loader, 'get_code') else None
+            if code is not None: h.update(b'code|' + sys.version.encode() + b'|' + marshal.dumps(code))
+            else: h.update(b'unknown|' + os.urandom(16))      # no identity: this build reuses no galcg entry
+        _state['galcode'] = h.hexdigest()
+    return _state['galcode']
+
+
+def gal_key_of(kind, params, inputs):
+    """key_of for galcg's kinds: cgcrop's identity (galcg uses its coder) and galcg's identity."""
+    return key_of(kind, dict(params, galcg=_gal_code_id()), inputs)
 
 
 def _path(key):
@@ -143,6 +170,38 @@ def recrop(pm_body, af_body, crop, source):
     put(key, dict(kind='recrop'), new)
     _state['new'] += 1
     return new
+
+
+def _gal_cached(kind, params, inputs, make):
+    key = gal_key_of(kind, params, inputs)
+    _state['used'].add(key)
+    hit = get(key)
+    if hit is not None and hit[0].get('kind') == kind:
+        _state['hits'] += 1
+        return hit[1]
+    new = make()
+    put(key, dict(kind=kind), new)
+    _state['new'] += 1
+    return new
+
+
+def galcopy(kind, pm_body, af_body, win, source, what):
+    """galcg.rebuild_copy(pm_body, source(), win)[0], cached ('galcopy': a gallery copy; 'recut2': an F28 story
+    re-cut); source() decodes the AF picture (only on a miss). A new entry passed rebuild_copy's checks."""
+    import galcg
+    if kind not in ('galcopy', 'recut2'): raise ValueError(kind)
+    pm_body, af_body = bytes(pm_body), bytes(af_body)
+    return _gal_cached(kind, dict(win=[float(c) for c in win]), [pm_body, af_body],
+                       lambda: galcg.rebuild_copy(pm_body, source(), win, what)[0])
+
+
+def galthumb(pm_body, copy_body, win, what):
+    """galcg.rebuild_thumb(pm_body, copy_body, win), cached; copy_body = the rebuilt gallery copy. A new entry passed
+    rebuild_thumb's checks (the drawer emulation reads back the target, opaque on every pixel)."""
+    import galcg
+    pm_body, copy_body = bytes(pm_body), bytes(copy_body)
+    return _gal_cached('galthumb', dict(win=[float(c) for c in win]), [pm_body, copy_body],
+                       lambda: galcg.rebuild_thumb(pm_body, copy_body, win, what))
 
 
 def finish(log=None):

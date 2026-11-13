@@ -2,6 +2,17 @@
 
 Supported game versions are checked by file size and SHA-1 (`required.json`).
 
+## 0.1.1 - 2026-11-12
+
+- Gallery (*Extras → Gallery*): the uncensored pictures now show the 2007 art there too, in the full views and in
+  the thumbnails. The gallery has its own copies of these pictures, which 0.1.0 left unchanged. They are rebuilt from
+  your own copy of the 2007 game when you build.
+- Two more edited pictures that 0.1.0 missed now show the 2007 art.
+- One picture now uses the right 2007 frame, and three tall pictures are cut more precisely.
+- Scene Tester: when the restored content was built by a newer version, the note now also says what to do if you
+  went back to this version on purpose: open Altered Fable Restore and click "Rebuild & install".
+- After updating, click **Rebuild & install** once. Content built with 0.1.0 does not have these fixes.
+
 ## 0.1.0 - 2026-11-09
 
 - Uncensored CGs: 27 pictures that Photonmelodies edited (the hot spring scene and its close-ups, the Myun × Chizuru

@@ -15,6 +15,7 @@ from oorparse import read_stream
 import entext
 import cgcrop
 import reencache          # disk cache of the picture re-encodes (same bytes; see reencache.py)
+import galcg              # F27-F29: the gallery's copies / thumbnails and the F28 story re-cuts
 from crimp import convert as crimp_convert, write_cstring_utf16
 import blocks as BL
 from scenes import heap as _scene_heap
@@ -449,7 +450,10 @@ def lead_in(A, bl):
 #   default-on, AFR_TEST off-switch: noc10 F01, not3d F02, noc3 F03, noc7 F04, noc5 F05, nopmsnd F06, noland F07,
 #     noc11 F08, noc15 F09, noc4 F10, noc6 F11, nofixwin F12, noexcl F13, noc2 F14, noentry F15, noc8 F16, noc1 F17,
 #     nobbexact / nosprexact F22, nokashi F23 (the owner's decision for exactness: F22 and F23 are default-on);
-#     the review fixes: noretid F24, nokashipm F25, nowinshow F26
+#     the review fixes: noretid F24, nokashipm F25, nowinshow F26;
+#     0.1.1 (lab-tools/out/research/gallery-0.1.1): nogal F27 (the gallery's own copies and thumbnails of the edited
+#     pictures), nocg45 F28 (the tall 45d98b story cuts: PM's window, the pixel-matched frames, dea8df9b added),
+#     nocg88 F29 (88c97317 with its gallery copy and thumbnail); nogal,nocg45,nocg88 rebuilds 0.1.0 (2a64319d)
 #   opt-in, AFR_TEST token: fadetime F18, hutdepth F19, pmexit F21 (the engine code does not prove them equal to 2007;
 #     the scene tester's 'Test: extra fixes' Version builds them together)
 #   F20 (posture) is dropped, no token: PM's CrelicUnitedGameProject settings dword [0x12] (+0x48, pm.exe FUN_00433230 ->
@@ -458,7 +462,7 @@ def lead_in(A, bl):
 #     (posture first) already shows the 2007 posture.
 FIX_OFF = {'noc10', 'not3d', 'noc3', 'noc7', 'noc5', 'nopmsnd', 'noland', 'noc11', 'noc15', 'noc4', 'noc6',
            'nofixwin', 'noexcl', 'noc2', 'noentry', 'noc8', 'noc1', 'nobbexact', 'nosprexact', 'nokashi', 'noretid',
-           'nokashipm', 'nowinshow'}
+           'nokashipm', 'nowinshow', 'nogal', 'nocg45', 'nocg88'}
 FIX_OPTIN = {'fadetime', 'hutdepth', 'pmexit'}
 AFR_TEST = set(filter(None, os.environ.get('AFR_TEST', '').split(',')))
 assert AFR_TEST <= {'zoom12', 'keepmikoto', 'nokeep', 'nonearplane', 'nozoom', 'zoomall', 'framerule', 'bb2bg', 'bb21',
@@ -3460,8 +3464,8 @@ for name, ins in by_heap.items():
     say('patched %s: +%d calls' % (name, len(ins)))
 # The ruo table lists objects in this order. The restore-audit fixes' objects come after the main / LEAD imports in fix
 # order (F15 ENTRY, F16 X45, F17's scene object (ycont_objs), F19 HUTDEPTH, F21 EXIT, F22 SPR, F23 KASHI, F23's start
-# scene (kashi_scene_objs)), so a fix appends its objects and every object of the build before it keeps its key and its
-# relative table order. Absolute table positions are not kept: an object a fix removes moves every later one down (F22
+# scene (kashi_scene_objs)), then 0.1.1's new objects (gal_objs: F27, F28's dea8df9b, F29; see the picture pass), so a
+# fix appends its objects and every object of the build before it keeps its key and its relative table order. Absolute table positions are not kept: an object a fix removes moves every later one down (F22
 # bbexact drops the BB_SHRINK override of PM 8fca8611, table index 41, which comes before every scene object and
 # import), and the opt-in F19 / F21 objects (fix_objs_late) come before F22 / F23's. PM reads the table into a key map
 # (pm.exe FUN_005de150) and finds objects by key (FUN_005df070); nothing depends on a table position.
@@ -3530,31 +3534,208 @@ for pm_off, (pm_size, af_off, af_size) in CG_OVERRIDES.items():
         raise BuildError('CG override %x: unexpected PM header' % pm_off)
     cg_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + body_))
 say('CG overrides (AF originals of edited PM pictures): %d, %.1f MB' % (len(cg_objs), sum(len(d) for _, d in cg_objs) / 1e6))
-_srcs = {}
+# ---------------------------------------------------------------- 0.1.1: F27 GALLERY, F28 CG45, F29 CG88
+# Evidence: lab-tools/out/research/gallery-0.1.1 (research + skeptic: skeptic_result.json; implementation and proofs:
+# impl/impl/RESULTS.json, lab-tools/scripts/check_gallery.py). Numbers only: no picture was looked at.
+# F27 GALLERY (AFR_TEST nogal). PM's EXTRAS > Gallery never draws the story objects CG_OVERRIDES / CG_RECROPS replace:
+# the AF tab's full view (heap 00ba7f84ba, instructions 2051-2561: 85 cases 'CVmCall CRsa 6acd5cb3 CImgAreaBox 454c9
+# Cr6Ti:<copy>', drawn by helper 5cb54395 OM_ChangeNumCtrlExData 0xc0 on CImgAreaBox 92cca521, 00d59ab962@37-38)
+# passes its own smaller copies, and its tiles (heap 00d5994f52, helper CRsa 323dbd9b) one 210x123 thumbnail per entry,
+# so a player saw the edited pictures there after 0.1.0. Both load through the normal node loader that looks keys up in
+# the ruo table (pm.exe FUN_005df070), so overriding them by their own key K + (off - 3) // 2 works like CG_OVERRIDES.
+# A raw key scan of PM's 265 heaps finds each object below once, only in its gallery heap. The unlock state is keyed on
+# the story reference (register 00d5836b7e), untouched. 13 AF-tab entries hold edited pictures; built here: 21 copies
+# and 10 thumbnails (F29 adds entry 46's pair). Not built: 6cd0aacb (clean: 0.11% of pixels changed, kernel noise),
+# thumbnail 92892eb9 (the edit lies outside its window), 6bd6ae6d (a PM-made third variant of AF 1c561a47 / 1c44c95b,
+# no AF original), the pair-slot layers 27c77b75 / 27c97afb / 27cc42d3 (PM-only), tabs 1-3 (none of their 304 pictures
+# is a copy of an edited AF picture), and entry 62 (copies 6d48d265..6d50bf81, thumbnail 92936d8d: PM's 16:9 widenings
+# of AF 35dbf065..3619d4e5, a composite would be a fudge; the owner's question).
+#  - copies (Opaque1, flag 0x00810602): the AF original resampled into the copy's geometry (galcg.resample2, separate x /
+#    y scale) and re-encoded (cgcrop.encode) under PM's header; decoded back within 2 (asserted). A whole-picture copy is
+#    the exact resize kx = W_copy / W_AF, ky = H_copy / H_AF, 0, 0 (equal to a free 4-parameter fit within 0.02 on 10
+#    copies; bilinear residual outside the edit 0.60-2.49, 5.69 for the broadly brightened 6c5fc6b7); the tall group is
+#    the story cut's window, AF rows 219-2158 at full width; 6bf511bb a fitted crop (residual 1.05).
+#  - thumbnails (Transparent, flag 0x00810303): Lanczos3 of the DECODED rebuilt copy at PM's window (in copy pixels),
+#    floor(v + 0.5) & 0xfe, opaque, encoded for PM's drawer FUN_0057eb80 (galcg.tencode; the drawer emulation reads
+#    it back exactly, asserted). Lanczos3 from the copy fits PM's own 13 unedited thumbnails best (11 of 13; mean 3.00
+#    against area 4.23, bilinear 6.76, with the drawer decode); galcg's integer form gives the same within one 7-bit step.
+# PM copy -> (PM size, AF object, AF size, window (kx, ky, x0, y0) = PM px per AF px, AF position)
+_HS = (1280 / 2604, 903 / 1838, 0, 0)          # 1280x903 copies of 2604x1838 AF pictures (whole picture)
+_TALL_G = (1280 / 2604, 953 / 1939, 0, 219)    # 1280x953 copies of the tall 2604x3677 AF pictures (rows 219-2158)
+GALLERY_COPIES = {
+    # entry 4, the hot-spring set (story CG_OVERRIDES 8e85a1df, bf8b21f1, bf933f67, bfab91d7, bfa376cf, bf9b5ad9,
+    # bfb4e099), full view 00ba7f84ba@2089-2095; each copy matches its AF frame (2.51-3.50 against 15.4-70.9 for the next)
+    0x6b3a5e21: (437671, 0x39bd0a19, 1478080, _HS),
+    0x6b3db4f7: (438011, 0x3c5c5d69, 1480550, _HS),
+    0x6b410c77: (437745, 0x3c72f4d3, 1478050, _HS),
+    0x6b446371: (437883, 0x3c898279, 1478344, _HS),
+    0x6b47bab1: (437679, 0x3ca01145, 1479284, _HS),
+    0x6b4b118b: (437857, 0x3cb6a3bd, 1479658, _HS),
+    0x6b4e68bd: (436739, 0x3ccd37ab, 1476432, _HS),
+    0x6b9f7b2f: (458161, 0x3ea33af3, 1153012, _HS),                          # entry 13 (story 8ed31363), @2150
+    0x6bf511bb: (722441, 0x42565d89, 1886362, (0.66635, 0.666433, 465.031, 0.0625)),   # entry 24 (8f48daa7), @2213
+    0x6c27d739: (898027, 0x4557dbf3, 1954476, (1280 / 2344, 902 / 1652, 0, 0)),         # entry 30 (8f874231), @2246
+    # entry 31, the tall 45d98b group (story 8f9661bd, dea8df9b, deb5c25d, dec2a7e5), @2251-2254: frames by pixels (on
+    # the two features where the 8 AF frames differ, 0.9-2.5 against 73-95 for the other state)
+    0x6c2eb131: (771679, 0x4575aea3, 2810464, _TALL_G),
+    0x6c349463: (770967, 0x464ba5cf, 2809284, _TALL_G),
+    0x6c3a7631: (771385, 0x46a130f1, 2809958, _TALL_G),
+    0x6c4058cf: (771263, 0x46cc115b, 2809820, _TALL_G),
+    0x6c5fc6b7: (819717, 0x4980f293, 2135192, (1280 / 2344, 1500 / 2748, 0, 0)),        # entry 36 (8fc2711d), @2280
+    0x6ca90c29: (594929, 0x4a59be5f, 857604, (1775 / 2175, 750 / 919, 0, 0)),           # entry 41 (900a1c8f), @2312
+    0x6cc6ab03: (671893, 0x4e732d29, 864980, (1897 / 2325, 750 / 919, 0, 0)),           # entry 45 (903d179b), @2332
+    0x6ccbcb4f: (638709, 0x4f4342d7, 809970, (1897 / 2325, 750 / 919, 0, 0)),           # entry 45 (bfcb5c7f), @2333
+    0x6ce51ad1: (502337, 0x4ee1d5f1, 1438686, _HS),                          # entry 49 (904d1063), @2354
+    0x6ce8eff3: (512193, 0x4ef7c9d3, 1509418, _HS),                          # entry 50 (9055a8e5), @2359
+    0x6d5e0cfd: (263121, 0x534b4439, 481952, (1280 / 2176, 904 / 1536, 0, 0)),          # entry 68 (90e4b04f), @2462
+}
+# PM thumbnail -> (PM size, the gallery copy it is made from, window (kx, ky, x0, y0) in copy pixels, fitted by the
+# research on PM's own thumbnail); tile 00d5994f52@<n>
+GALLERY_THUMBS = {
+    0x9283d1ad: (25151, 0x6b3a5e21, (0.164031, 0.163949, -0.3275, -0.1525)),       # entry 4, @22
+    0x92865af3: (25561, 0x6b9f7b2f, (0.164051, 0.163928, -0.2825, 121.84)),        # entry 13, @49
+    0x928aeca9: (51881, 0x6c27d739, (0.16404, 0.16404, -0.33, 78.88)),             # entry 30, @100
+    0x928b51ff: (44469, 0x6c2eb131, (0.164033, 0.163706, -0.38, 66.925)),          # entry 31, @103
+    0x928cf443: (34205, 0x6c5fc6b7, (0.164041, 0.16402, -0.43625, 121.57875)),     # entry 36, @118
+    0x928e83c5: (31967, 0x6ca90c29, (0.16397, 0.16397, 249.80125, -0.47)),         # entry 41, @133
+    0x928fb8df: (28437, 0x6cc6ab03, (0.16397, 0.16399, -0.1875, -0.42)),           # entry 45, @145
+    0x92907641: (28693, 0x6ce51ad1, (0.164031, 0.163929, -0.3875, 60.765)),        # entry 49, @157
+    0x9290ae4d: (30109, 0x6ce8eff3, (0.16405, 0.164009, -0.28375, 60.8575)),       # entry 50, @160
+    0x92942b99: (20051, 0x6d5e0cfd, (0.164053, 0.163767, -0.36375, 73.15875)),     # entry 68, @218
+}
+# F28 CG45 (AFR_TEST nocg45). The 2344x1745 16:9 cuts of the tall 45d98b CGs (PM 01b8c7a482@2039-2115) are AF rows
+# 219-2158 at full width: window (2344 / 2604, 1745 / 1939, 0, 219), the same fit for all four cuts (bilinear residual
+# outside the edit 1.35; CG_RECROPS' (0.901536, 2.085938, 220.78125) gives 3.64: about 0.15% too close, up to 2 AF px
+# off at the edges). Sources: deb5c25d -> 46a130f1 (its only visible call, @2101, follows AF 7597, where 2007 shows
+# 46a130f1 (F16's comment above), and its pixels match 46a130f1: 1.50 against 94.65); dec2a7e5 -> 46cc115b (pixels;
+# its one call @2068 lies in F16's bypass, consistency only); 8f9661bd keeps 4620f395 (2007's frame at 2 of its 3 calls,
+# @2039 / @2046 = AF 7359; its pixels are 4575aea3, 2007's frame at @2115 = AF 7612); NEW dea8df9b -> 464ba5cf (0.1.0
+# missed it: pixels 4.40 against 5.78 for the next frame; visible at @2110, @2053 / @2073 in F16's bypass). The three
+# CG_RECROPS entries are re-cut in place (same keys, same table positions); dea8df9b comes after every 0.1.0 object.
+_TALL_S = (2344 / 2604, 1745 / 1939, 0, 219)
+CG45_RECUTS = {
+    0x8f9661bd: (1690943, 0x4620f395, 2798134, _TALL_S),
+    0xdeb5c25d: (1690379, 0x46a130f1, 2809958, _TALL_S),
+    0xdec2a7e5: (1689435, 0x46cc115b, 2809820, _TALL_S),
+    0xdea8df9b: (1688961, 0x464ba5cf, 2809284, _TALL_S),          # new (not in CG_RECROPS)
+}
+# F29 CG88 (AFR_TEST nocg88). PM 88c97317 (story 00ce1abaf2@1974, 2000, 2008, 2078; unlock CG of entry 46) is AF
+# 31329af3 with a localized darkening (its copy 6cd5459d: low-pass change on 1.3% of pixels, luma 69.6 against 99.7);
+# display size 2344 x 0.5556 = 1302.2 against AF's 2604 x 0.5 = 1302, so a direct override like CG_OVERRIDES; plus its
+# gallery copy (whole picture) and thumbnail, by the same pixel test the 0.1.0 sweep overrides passed.
+CG88_OVERRIDES = {0x88c97317: (1014115, 0x31329af3, 1185082)}
+CG88_COPIES = {0x6cd5459d: (427315, 0x31329af3, 1185082, _HS)}          # entry 46, @2339
+CG88_THUMBS = {0x928ff06b: (25859, 0x6cd5459d, (0.16399, 0.163908, -0.64125, 30.21625))}     # entry 46, @148
+_FIX_GAL, _FIX_CG45, _FIX_CG88 = fix_on('gal'), fix_on('cg45'), fix_on('cg88')
+
+
+def _pic_extent_ok(win, ow, oh, W, H):
+    """The window reads inside the source picture (2 px of edge allowed: fitted windows start a little outside)."""
+    kx, ky, x0, y0 = win
+    return -2 <= x0 and -2 <= y0 and x0 + ow / kx <= W + 2 and y0 + oh / ky <= H + 2
+
+
+# The picture pass: every re-encode of CG_RECROPS (0.1.0's form) and of the fixes above, grouped by AF picture so each
+# is decoded once, for the most rows any of its jobs reads (resample reads only the first rows it needs: the same bytes
+# as decoding exactly that many); a cached job needs no decode at all. Results go into the table in 0.1.0's order
+# (CG_RECROPS by AF object), the fixes' new objects after every other object (gal_objs, see objs below).
 _t0 = time.time()
-_recrops = []
+_jobs = []         # (tag, kind, pm_off, pm_raw, af_off, af_body, win, need)
 for pm_off, (pm_size, af_off, af_size, crop_) in sorted(CG_RECROPS.items(), key=lambda kv: kv[1][1]):
+    if _FIX_CG45 and pm_off in CG45_RECUTS: continue          # F28 re-cuts it below (same key, same position)
     schema_, body_, raw_, (n_, mode_, extra_) = af_object(af_off, af_size)
     pm_raw_ = pm_object(pm_off, pm_size)
     if mode_ != 0 or schema_ != 3 or pm_raw_[:2] != b'\x00\x04':
         raise BuildError('CG re-crop %x <- %x: unexpected header' % (pm_off, af_off))
     need_ = cgcrop.rows_needed(cgcrop.header(body_)['h'], crop_[0], crop_[2], cgcrop.header(pm_raw_[2:])['h'])
-    _recrops.append((pm_off, af_off, body_, pm_raw_, crop_, need_))
-# each AF picture is decoded once, for the most rows any of its crops needs; a crop gets the first rows it needs
-# (resample reads only those: the same bytes as decoding exactly that many). A cached crop needs no decode at all.
+    _jobs.append(('recrop', 'recrop', pm_off, pm_raw_, af_off, body_, crop_, need_))
+for _tag, _kind, _table in (('cg45', 'recut2', CG45_RECUTS if _FIX_CG45 else {}),
+                            ('gal', 'galcopy', GALLERY_COPIES if _FIX_GAL else {}),
+                            ('cg88', 'galcopy', CG88_COPIES if _FIX_CG88 else {})):
+    for pm_off, (pm_size, af_off, af_size, win_) in _table.items():
+        schema_, body_, raw_, (n_, mode_, extra_) = af_object(af_off, af_size)
+        pm_raw_ = pm_object(pm_off, pm_size)
+        if mode_ != 0 or schema_ != 3 or pm_raw_[:2] != b'\x00\x04':
+            raise BuildError('%s %x <- %x: unexpected header' % (_tag, pm_off, af_off))
+        ha_ = cgcrop.header(body_)
+        hp_ = galcg.check_header(pm_raw_[2:], galcg.COPY_FLAG, '%s %x' % (_tag, pm_off))
+        if ha_['flag'] & 0xff != 2 or not ha_['depth'] & 4 or not _pic_extent_ok(win_, hp_['w'], hp_['h'], ha_['w'], ha_['h']):
+            raise BuildError('%s %x <- %x: AF picture not Opaque1 or window outside it' % (_tag, pm_off, af_off))
+        _jobs.append((_tag, _kind, pm_off, pm_raw_, af_off, body_, win_, galcg.rows_needed2(ha_['h'], win_[1], win_[3], hp_['h'])))
+_thumb_jobs = []   # (tag, pm_off, pm_raw, copy_off, win)
+for _tag, _table, _copies in (('gal', GALLERY_THUMBS if _FIX_GAL else {}, GALLERY_COPIES),
+                              ('cg88', CG88_THUMBS if _FIX_CG88 else {}, CG88_COPIES)):
+    for pm_off, (pm_size, copy_off, win_) in _table.items():
+        pm_raw_ = pm_object(pm_off, pm_size)
+        if pm_raw_[:2] != b'\x00\x04' or copy_off not in _copies:
+            raise BuildError('%s thumbnail %x: unexpected header or copy %x' % (_tag, pm_off, copy_off))
+        ht_ = galcg.check_header(pm_raw_[2:], galcg.THUMB_FLAG, '%s thumbnail %x' % (_tag, pm_off))
+        hc_ = cgcrop.header(pm_object(copy_off, _copies[copy_off][0])[2:])
+        if not _pic_extent_ok(win_, ht_['w'], ht_['h'], hc_['w'], hc_['h']):
+            raise BuildError('%s thumbnail %x: window outside copy %x' % (_tag, pm_off, copy_off))
+        _thumb_jobs.append((_tag, pm_off, pm_raw_, copy_off, win_))
 _rows_max = {}
-for pm_off, af_off, body_, pm_raw_, crop_, need_ in _recrops:
-    _rows_max[af_off] = max(_rows_max.get(af_off, 0), need_)
-for pm_off, af_off, body_, pm_raw_, crop_, need_ in _recrops:
-    def _source(af_off=af_off, body_=body_, need_=need_):
-        if af_off not in _srcs:
-            _srcs.clear(); _srcs[af_off] = cgcrop.decode(body_, _rows_max[af_off])
-        W_, H_, rows_ = _srcs[af_off]
-        return W_, H_, rows_[:need_]
-    new_ = reencache.recrop(pm_raw_[2:], body_, crop_, _source)
-    cg_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + new_))
-_srcs.clear(); del _recrops
-say('CG crops rebuilt from AF originals: %d (%.0fs)' % (len(CG_RECROPS), time.time() - _t0))
+for j_ in _jobs:
+    _rows_max[j_[4]] = max(_rows_max.get(j_[4], 0), j_[7])
+_pic = {}                                       # pm_off -> rebuilt body (without the 00 04 PM header)
+_pic_t = collections.Counter(); _pic_dec = [0, 0.0]
+for af_off in sorted(_rows_max):
+    _src = {}
+    for tag_, kind_, pm_off, pm_raw_, af_off_, body_, win_, need_ in (j_ for j_ in _jobs if j_[4] == af_off):
+        def _source(body_=body_, need_=need_):
+            if not _src:
+                t_ = time.time(); _src['d'] = cgcrop.decode(body_, _rows_max[af_off])
+                _pic_dec[0] += 1; _pic_dec[1] += time.time() - t_
+            W_, H_, rows_ = _src['d']
+            return W_, H_, rows_[:need_]
+        t_ = time.time()
+        if kind_ == 'recrop':
+            _pic[pm_off] = reencache.recrop(pm_raw_[2:], body_, win_, _source)
+        else:
+            _pic[pm_off] = reencache.galcopy(kind_, pm_raw_[2:], body_, win_, _source, '%s %x <- %x' % (tag_, pm_off, af_off))
+        _pic_t[tag_] += time.time() - t_
+    _src.clear()
+for tag_, pm_off, pm_raw_, copy_off, win_ in _thumb_jobs:
+    t_ = time.time()
+    _pic[pm_off] = reencache.galthumb(pm_raw_[2:], _pic[copy_off], win_, '%s thumbnail %x' % (tag_, pm_off))
+    _pic_t[tag_] += time.time() - t_
+for pm_off, (pm_size, af_off, af_size, crop_) in sorted(CG_RECROPS.items(), key=lambda kv: kv[1][1]):
+    cg_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + _pic[pm_off]))
+say('CG crops rebuilt from AF originals: %d (%.0fs; AF pictures decoded for the picture pass: %d, %.0fs)' % (
+    len(CG_RECROPS), _pic_t['recrop'], _pic_dec[0], _pic_dec[1]))
+# the fixes' new objects, in fix order (F27, F28, F29), after every other object of the table
+gal_objs = []
+if _FIX_GAL:
+    for pm_off in list(GALLERY_COPIES) + list(GALLERY_THUMBS):
+        gal_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + _pic[pm_off]))
+    if len(gal_objs) != 31: raise BuildError('F27 GALLERY: %d objects, not 31' % len(gal_objs))
+    say('F27 gallery (its own copies and thumbnails, rebuilt from the AF originals): %d copies + %d thumbnails, '
+        '%.1f MB (%.0fs)' % (len(GALLERY_COPIES), len(GALLERY_THUMBS), sum(len(d) for _, d in gal_objs) / 1e6, _pic_t['gal']))
+if _FIX_CG45:
+    _n0 = len(gal_objs)
+    for pm_off in CG45_RECUTS:
+        if pm_off not in CG_RECROPS: gal_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + _pic[pm_off]))
+    if len(gal_objs) - _n0 != 1: raise BuildError('F28 CG45: %d new objects, not 1' % (len(gal_objs) - _n0))
+    say('F28 CG45 (tall 45d98b story cuts at PM\'s window): %d re-cut in place (%s), %d added (%s), %.1f MB (%.0fs)' % (
+        sum(1 for o_ in CG45_RECUTS if o_ in CG_RECROPS), ', '.join('%x <- %x' % (o_, v_[1]) for o_, v_ in CG45_RECUTS.items() if o_ in CG_RECROPS),
+        len(gal_objs) - _n0, ', '.join('%x <- %x' % (o_, v_[1]) for o_, v_ in CG45_RECUTS.items() if o_ not in CG_RECROPS),
+        sum(len(_pic[o_]) + 2 for o_ in CG45_RECUTS) / 1e6, _pic_t['cg45']))
+if _FIX_CG88:
+    _n0 = len(gal_objs)
+    for pm_off, (pm_size, af_off, af_size) in CG88_OVERRIDES.items():       # CG_OVERRIDES' form and checks
+        schema_, body_, raw_, (n_, mode_, extra_) = af_object(af_off, af_size)
+        if mode_ != 0 or schema_ != 3 or body_[28:30] != b'\x00\x00':
+            raise BuildError('CG88 override %x <- %x: unexpected AF header' % (pm_off, af_off))
+        if pm_object(pm_off, pm_size)[:2] != b'\x00\x04':
+            raise BuildError('CG88 override %x: unexpected PM header' % pm_off)
+        gal_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + body_))
+    for pm_off in list(CG88_COPIES) + list(CG88_THUMBS):
+        gal_objs.append(((K + (pm_off - 3) // 2) & 0xFFFFFFFF, b'\x00\x04' + _pic[pm_off]))
+    if len(gal_objs) - _n0 != 3: raise BuildError('F29 CG88: %d objects, not 3' % (len(gal_objs) - _n0))
+    say('F29 CG88: %d story override + %d gallery copy + %d thumbnail, %.1f MB (%.0fs)' % (
+        len(CG88_OVERRIDES), len(CG88_COPIES), len(CG88_THUMBS), sum(len(d) for _, d in gal_objs[_n0:]) / 1e6, _pic_t['cg88']))
+del _jobs, _thumb_jobs; _pic.clear()
+say('picture pass: %.0fs' % (time.time() - _t0))
 # BB_SHRINK: an oversized billboard picture that PM also has byte for byte stays PM's object (gallery unlocks,
 # saves) and that object is overridden with the smaller re-encode (the engine reads the size from the ruo entry)
 for af_off in sorted(BB_SHRINK):
@@ -3749,7 +3930,10 @@ if (FULL_BUILD and OLD_ZOOM and not PRE_EXACT and CAMERA_KEEP and CAMERA_KEEP_AL
         and keep_id[0] - KEEP_ID_BASE != _keep_want):
     raise BuildError('CAMERA_KEEP: %d inserts (KEEP ids), not %d' % (keep_id[0] - KEEP_ID_BASE, _keep_want))
 from ruowrite import write_ruo
-objs = pm_objs + cg_objs + scene_objs + imports + ycont_objs + fix_objs_late + kashi_scene_objs
+objs = pm_objs + cg_objs + scene_objs + imports + ycont_objs + fix_objs_late + kashi_scene_objs + gal_objs
+# the 0.1.1 fixes' objects (gal_objs, last) are new keys: no earlier object has them, none twice
+if len({k_ for k_, _ in gal_objs}) != len(gal_objs) or {k_ for k_, _ in gal_objs} & {k_ for k_, _ in objs[:len(objs) - len(gal_objs)]}:
+    raise BuildError('0.1.1 fixes: a new object key is used twice')
 res = write_ruo(sys.argv[1], objs)
 say('wrote %s %s, %d objects' % (sys.argv[1], res, len(objs)))
 json.dump(manifest, open(os.path.join(OUT, 'build_manifest.json'), 'w'), indent=1)

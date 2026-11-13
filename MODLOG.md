@@ -1416,3 +1416,104 @@ Three reviews of the release kit found eight small problems, and all of them are
 - **Exes:** `dist/AFRestore.exe` is 1c3bc30f and `dist/AFRestore Scene Tester.exe` is faae542a. Archive compare against
   the previous build (59f8116f), the before-split exe and 1.1.0: only the app script differs. The 16 builder modules and
   the 7 data files equal app_src.
+
+## 0.1.1: the gallery, two missed pictures, the tall cuts (2026-11-12)
+
+GitHub issue #1: after 0.1.0 the gallery page still showed the edited pictures. Two researchers and a skeptic traced it
+in PM's code and pixels (lab-tools/out/research/gallery-0.1.1). Three fixes, each with its own AFR_TEST off-switch, all
+on by default (v11 leaves them out too).
+
+- **Why 0.1.0 missed the gallery.** EXTRAS > Gallery (heap 00ba7f84ba) is plain script and never draws the story
+  objects that 0.1.0 overrides.
+  - Full views: its own smaller Cr6Ti copies (00ba7f84ba instructions 2051-2561, through CRsa 6acd5cb3).
+  - Tiles: one 210x123 Transparent thumbnail per entry (heap 00d5994f52).
+  - Both load by key through the ruo table (FUN_005df070), like the story objects. So overriding the gallery objects
+    by their own keys (K + (pm_off - 3) // 2) works as 0.1.0's story overrides do.
+  - Unlock state is keyed on the story reference and is unchanged.
+  - A raw key scan of all 265 heaps finds each fixed gallery object exactly once, only in its gallery heap.
+  - Page rule (00ba7f84ba@1016-1027): first index = page * 15, 3 rows of 5 tiles (x = col * 216 + 104,
+    y = row * 140 + 174).
+- **F27 GALLERY** (`nogal`): 21 gallery copies and 10 thumbnails of the AF tab, in a new module `galcg.py`.
+  - Copies (Opaque1, flag 0x00810602) are rebuilt from the AF original. A whole-picture copy is the exact resize
+    kx = W_G / W_AF, ky = H_G / H_AF, x0 = y0 = 0, which equals a free 4-parameter fit within 0.02. The tall group
+    (6c2eb131 <- 4575aea3, 6c349463 <- 464ba5cf, 6c3a7631 <- 46a130f1, 6c4058cf <- 46cc115b) is AF rows 219-2158 at
+    full width, and 6bf511bb is a fitted crop. Each is re-encoded by cgcrop under PM's header and decodes back
+    within 2.
+  - Thumbnails (Transparent, flag 0x00810303) are Lanczos3 of the DECODED rebuilt copy at PM's window. That kernel
+    fits PM's 13 unedited thumbnails best: mean 3.00, against 4.23 for area and 6.76 for bilinear. Values are
+    floor(v + 0.5) & 0xfe, and the result is opaque. The integer form (taps summing to 2^14, no libm, no sum()) gives
+    the same bytes under Python 3.11 and 3.12.
+  - **PM's Transparent drawer FUN_0057eb80** (pm.c 321661) holds bytes biased by 0x80 and adds with paddsb, which
+    saturates on every add. It halves with psraw 9 (floor) and stores pixel & fe fe fe ff. The alpha code ta goes in
+    as ta << 26, so the alpha byte is (ta & 0x3f) << 2, and a copy-above pixel masks ta to 6 bits. ta 32 gives 0x80,
+    the value PM's AF-tab thumbnails have on every pixel. The research decoder cr6ti._transparent clamps once and
+    misreads 289 of PM's 293 thumbnails.
+  - `galcg.tencode` writes streams for that drawer. `galcg.tdecode` reads them as the drawer does, and
+    `rebuild_thumb` refuses any stream it does not read back exactly, with alpha byte 0x80 on every pixel.
+  - Excluded:
+    - 6cd0aacb (clean);
+    - thumbnail 92892eb9 (the edit lies outside its window);
+    - 6bd6ae6d (a PM-made third variant, no AF original);
+    - the pair-slot layers 27c77b75 / 27c97afb / 27cc42d3 (PM-only);
+    - tabs 1-3 (none of their pictures is a copy of an edited AF picture).
+- **F28 CG45** (`nocg45`): the tall 16:9 story cuts of the 45d98b CGs (PM 01b8c7a482@2039-2115).
+  - 0.1.0's window (0.901536, 2.085938, 220.78125) left residual 3.64 outside PM's edit. PM's own window is
+    kx = 2344 / 2604, ky = 1745 / 1939, x0 0, y0 219, with residual 1.35. The new cuts measure 1.37-1.43 against PM's
+    objects outside the edit (0.1.0's cuts: 2.38-2.49).
+  - deb5c25d's source becomes 46a130f1. Its only visible call @2101 follows AF 7597, where 2007 shows 46a130f1 (the
+    builder's F16 comment), and its pixels match 46a130f1 (1.50 against 94.65).
+  - dec2a7e5's source becomes 46cc115b (pixels). Its one call @2068 lies in F16's bypass, so this is consistency only.
+  - 8f9661bd keeps 4620f395, 2007's frame at 2 of its 3 calls (@2039 / @2046).
+  - New story override dea8df9b <- 464ba5cf, at the same window. 0.1.0 missed it, and it is visible at @2110.
+  - 0.1.0's sources were not swapped, as one report claimed. They were one step off, from objmap's pairing by script
+    position.
+- **F29 CG88** (`nocg88`): story 88c97317, a localized darkening, gets a direct override (00 04 + the AF 31329af3 body,
+    display size 1302.2 against AF's 1302). Its gallery copy 6cd5459d (whole resize) and thumbnail 928ff06b come with
+    it. It is visible at 00ce1abaf2@1974 / 2000 / 2008 / 2078 / 2646 and in gallery entry 46. It passes the same pixel
+    test as 0.1.0's sweep overrides.
+- **Not built: slot 62.** Gallery entry 62 holds copies 6d48d265..6d50bf81 (story 90cedbc7..) and thumbnail 92936d8d.
+  They are PM's 16:9 widenings of AF 35dbf065..3619d4e5, in a scene where the restoration keeps PM's version.
+  - The 0.1.0 wording "band differences at the sides" (section 1.1.0, *Not changed*) is refuted. Inside the AF area
+    1.2-8.6% of the pixels change locally, with more detail and brighter, and two of the six are regraded overall.
+  - Statistics cannot tell censorship from a PM redraw, and a composite with colour transfer would be a fudge. This
+    stays the owner's question.
+- **Order.** 0.1.0's entries keep their keys and order, and the 3 re-cuts are changed in place. The 35 new objects come
+  after all of them. AFR_TEST=nogal,nocg45,nocg88 rebuilds 0.1.0's default byte for byte.
+- **Cache.** reencache has three new kinds, galcopy, galthumb and recut2, keyed with galcg's identity as well. 0.1.0's
+  shrink / recrop keys are unchanged.
+- **Review fix.** `tdecode` first used cr6ti's alpha rule (ta * 8, capped at 255), so the opaque check passed for any
+  ta >= 32. PM's drawer gives ta 64 alpha byte 0, which is not drawn. tdecode now gives PM's byte and masks ta on
+  copy-above, and rebuild_thumb requires 0x80. The gap was latent only: tencode writes ta 32 everywhere, so no output
+  changed.
+  - On 400 synthetic streams with other alpha codes and copy-above pixels, the new tdecode equals an independent
+    drawer emulation on every RGBA value.
+  - It reads the same RGB as before from all 293 PM thumbnails. Tabs 0-2 (153) are 0x80 everywhere. Tab 3 (140) also
+    has 0x70-0x7c, which is ta 28-31.
+- **Patch** (build_all 9517a4d0, galcg 1d2effde, reencache 95c292dc, cgcrop 028a2779 unchanged):
+  - default 6a353183 (5753 entries) and English eb4e97a1; a cold cache gives the same as a warm one;
+  - nogal,nocg45,nocg88 gives 2a64319d (English 80ffa73b), which is 0.1.0's; v11 gives ea97eb32;
+  - nogal 7a2311bd, nocg45 d4a40c79, nocg88 38cee913.
+  - The ruo table changes in exactly the 3 re-cut keys, plus the 35 new keys.
+- **App 0.1.1** (`APP_VERSION = '0.1.1'`):
+  - Content built with 0.1.0 shows "built by version 0.1.0 of this app: click Rebuild & install", and the first start
+    after the update asks to rebuild.
+  - The Scene Tester's note for content built by a newer version now also says that a player who went back to this
+    version on purpose can open Altered Fable Restore and click *Rebuild & install*.
+  - `galcg` is in `BUNDLED` and in the hidden imports of all four specs.
+- **Checked:**
+  - Updater against a fake GitHub: 159/159. The published 0.1.0 code offers v0.1.1, verifies its zip and stages both
+    programs (6/6, also with the real zip).
+  - GUI tests with the tk stub: Altered Fable Restore 78/78, Scene Tester 76/76.
+  - Self-tests 60/60, regression against 0.1.0 30/30, specs 27/27, flat source 22/22, source self-tests 27/27.
+  - The workflow's pre-flight with tag v0.1.1 and the notes extraction (CHANGELOG 0.1.1 section).
+- **Exes** (PyInstaller 6.22.3, Python 3.12.10):
+  - `dist/AFRestore.exe` is ace56f1c and `dist/AFRestore Scene Tester.exe` is 0a4463ab. The 0.1.0 programs are in
+    `dist/old` as `AFRestore-0.1.0.exe` and `AFRestore Scene Tester-0.1.0.exe`.
+  - Their frozen modules equal app_src. Against 0.1.0, only the app code, build_all and reencache differ, and galcg
+    is new.
+  - The console twin's `--build` with an empty settings folder gives 6a353183, and its scene test kit equals the lab
+    kit. The English build then reuses all 44 cache entries and gives eb4e97a1, so the frozen galcg identity is
+    stable.
+  - Built from the flat public layout, both programs hold the same archives.
+- **Not seen in game:** the gallery overrides, and the Transparent drawer reading, which was never run inside the
+  engine.
