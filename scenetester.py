@@ -14,7 +14,7 @@ if __name__ == '__main__':
     except Exception as e:
         # app.py ends every --selftest run itself; this only reports an app module that is missing or does not load,
         # which the windowed exe would otherwise show in an error box
-        if sys.argv[1:2] not in (['--selftest'], ['--selftest-scenetest']): raise
+        if sys.argv[1:2] not in (['--selftest'], ['--selftest-scenetest'], ['--selftest-workers']): raise
         try:
             sys.stdout.write('SELFTEST FAILED starting the app: %r\n' % e); sys.stdout.flush()
         except Exception:

@@ -12,6 +12,11 @@ The app contains no game data: scripts, images and voices are read from the user
                                                   window; prints 'SELFTEST OK <version>' (exit 0) or the error (exit 3)
   AFRestore --selftest-scenetest [FIXTURE]     -> (tests only) the scene test end to end on fake folders in a temp
                                                   folder, no window; prints 'SCENETEST OK' (exit 0) or the error (3)
+  AFRestore --selftest-workers                 -> (tests / CI) the build's picture workers on synthetic pictures, no
+                                                  window; prints 'SELFTEST WORKERS OK <n> <s>' and 'SELFTEST OK
+                                                  <version>' (exit 0) or the error (exit 3)
+  AFRestore --afr-picworker                    -> (internal) one picture worker of a build (picpool.py): started by the
+                                                  build with pipes, no window, below-normal priority
 
 The Scene Tester (AFRestore Scene Tester.exe / ./AFRestoreSceneTester) is this same file started by scenetester.py in
 tester mode (SCENE_TESTER): its window plays one restored scene and puts everything back; the flags above work there
@@ -19,15 +24,26 @@ too. The two programs share the settings folder (HOME) and are never open at the
 """
 import sys
 
+# a picture worker of a running build (picpool.py starts this program with the flag): only the worker runs, before any
+# other import; it never returns and never raises past here (the windowed exe would show an uncaught error in a box)
+if __name__ == '__main__' and sys.argv[1:2] == ['--afr-picworker']:
+    try:
+        import picpool
+        picpool.worker_main()
+    except BaseException:
+        pass
+    import os
+    os._exit(3)
+
 APP = 'Altered Fable Restore'
-APP_VERSION = '0.1.1'                      # bump for every release; tag the GitHub release 'v' + APP_VERSION
+APP_VERSION = '0.1.2'                      # bump for every release; tag the GitHub release 'v' + APP_VERSION
 TESTER = 'AFRestore Scene Tester'
 # True when scenetester.py started this file (runpy init_globals): the window is the Scene Tester's
 SCENE_TESTER = bool(globals().get('SCENE_TESTER'))
 # --selftest is decided before anything else is imported, so that even a failing import or a missing data file ends
 # in selftest_end() (message + exit code 3) instead of an uncaught exception, which the windowed Windows exe shows
 # in an error box that nobody can close on a build machine
-SELFTEST = __name__ == '__main__' and sys.argv[1:2] in (['--selftest'], ['--selftest-scenetest'])
+SELFTEST = __name__ == '__main__' and sys.argv[1:2] in (['--selftest'], ['--selftest-scenetest'], ['--selftest-workers'])
 if SELFTEST:
     sys.dont_write_bytecode = True         # a run from source leaves no __pycache__ behind
 
@@ -960,7 +976,27 @@ def update_leftovers():
 
 
 # ---------------------------------------------------------------- build (runs in a child process: AFRestore.exe --build)
+def stop_with_parent():
+    """--build started by the window (env AFR_BUILD_PIPE=1, stdin = the window's pipe): when the window goes away
+    (closed, crashed or killed: its end of the pipe closes) the build stops at once; its picture workers stop with it
+    (their own stdin closes). Nothing is ever written to the pipe."""
+    if os.environ.pop('AFR_BUILD_PIPE', None) != '1': return
+    try:
+        os.fstat(0)
+    except OSError:
+        return                                      # (no stdin after all: no watch)
+
+    def watch():
+        try:
+            while os.read(0, 65536): pass
+        except OSError:
+            pass
+        os._exit(1)
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def do_build(pm, af, out_ruo, en_pkg=None):
+    stop_with_parent()
     work = os.path.join(HOME, 'work')
     if os.path.isdir(work): shutil.rmtree(work)
     os.makedirs(work)
@@ -1277,8 +1313,10 @@ def restore_gui():
 
         def run():
             try:
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
-                                     errors='replace', **osc.no_window())     # creationflags is Windows-only
+                # stdin: a pipe this window holds until the build ends; the build stops when it closes (stop_with_parent)
+                p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, encoding='utf-8', errors='replace',
+                                     env=dict(os.environ, AFR_BUILD_PIPE='1'), **osc.no_window())    # (creationflags: Windows)
             except OSError as e:
                 q.put(('line', 'could not start the build: %s' % e, 0)); q.put(('end', -1, 0)); return
             n = 0
@@ -1855,8 +1893,8 @@ def tester_gui():
 # ---------------------------------------------------------------- --selftest (CI smoke run of the frozen app)
 # the builder modules bundled next to app.py (AFRestore.spec hiddenimports, minus build_all: importing it runs a build)
 BUNDLED = ('oscompat', 'objio', 'ruowrite', 'crsa', 'rsaparse', 'builder', 'heapwriter', 'blocks', 'scenes', 'align',
-           'flow', 'crimp', 'oorparse', 'entext', 'cgcrop', 'galcg', 'reencache', 'scenekit',
-           'scenetest_session')
+           'flow', 'crimp', 'oorparse', 'entext', 'cgcrop', 'galcg', 'galadd', 'reencache', 'scenekit',
+           'scenetest_session', 'picfast', 'picpool')
 # standard modules the app imports only inside functions (update download, Windows process lookup, the build)
 LAZY_STDLIB = ('zipfile', 'tarfile', 'posixpath', 'gzip', 'zlib', 'struct', 'runpy', 'importlib.util', 'ast', 'traceback') + \
               (('ctypes', 'ctypes.wintypes', 'winreg') if os.name == 'nt' else ())
@@ -2109,7 +2147,77 @@ def _synthetic_kit(live, kit_dir):
     return list(items)
 
 
+def selftest_workers():
+    """--selftest-workers (CI and release checks; no window, no game, no file written): two picture workers started as
+    a build starts them (picpool: this program with --afr-picworker, pipes, no window, below-normal priority) compute
+    synthetic pictures: the handshake passes (same coder identities and known-answer bytes), every result equals this
+    process's own, each worker runs below normal (Windows: priority class 0x4000, no console, no window of its own;
+    elsewhere nice >= 10) in this program's bundle (_MEIPASS), and every worker is gone within 5 s of its stdin
+    closing. Prints 'SELFTEST WORKERS OK <n> <seconds>' and ends in selftest_end()."""
+    step = 'starting'
+    try:
+        t0 = time.time()
+        for name in ('stdout', 'stderr'):
+            if getattr(sys, name) is None: setattr(sys, name, open(os.devnull, 'w', encoding='utf-8'))
+        os.environ['AFR_JOBS'] = '2'
+        os.environ['AFR_CACHE'] = 'off'
+        step = 'importing picpool'
+        import picpool, reencache
+        step = 'in-process results'
+        kat = picpool.kat_spec()
+        want = picpool.run_item(kat)
+        if not all(r[0] == 'ok' for r in want) or not all(t[0] == 'ok' for t in want[0][2]):
+            raise ValueError('the synthetic pictures failed in this process: %r' % (want,))
+        items = [dict(spec=kat, keys=['selftest-%d-%d' % (i, j) for j in range(len(kat['outs']))], cost=1) for i in range(4)]
+        step = 'starting the workers'
+        p = picpool.prefetch(lambda: items)
+        if p is None: raise ValueError('no pool (AFR_JOBS 2)')
+        step = 'results'
+        t_ = kat['outs'][0]['thumbs'][0]
+        tk = reencache.galthumb_key(t_['pm'], want[0][1], t_['win'], t_['kind'])
+        for it in items:
+            if picpool.take(it['keys'][0]) != want[0][1] or picpool.take(it['keys'][1]) != want[1][1]:
+                raise ValueError('a worker result differs (%s)' % p.summary())
+        if picpool.take(tk) != want[0][2][0][1]: raise ValueError('a worker thumbnail differs (%s)' % p.summary())
+        ws = [w for w in p.workers if w['ok']]
+        if len(ws) != 2 or p.fallback or p.dead: raise ValueError(p.summary())
+        step = 'worker processes'
+        for w in ws:
+            i = w['info']
+            if i.get('meipass') != getattr(sys, '_MEIPASS', None): raise ValueError('worker bundle %r' % i.get('meipass'))
+            if i.get('frozen') != bool(getattr(sys, 'frozen', False)): raise ValueError('worker frozen %r' % i.get('frozen'))
+            if osc.IS_WIN:
+                if i.get('priority') != 0x4000 or i.get('console'): raise ValueError('worker priority / console %r' % i)
+            elif i.get('nice', 0) < 10:
+                raise ValueError('worker nice %r' % i.get('nice'))
+        if osc.IS_WIN:
+            import ctypes
+            from ctypes import wintypes
+            u32 = ctypes.WinDLL('user32')
+            pids = {w['p'].pid for w in ws}; found = []
+            cb_t = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+
+            def cb(h, _):
+                pid = wintypes.DWORD(); u32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+                if pid.value in pids: found.append(pid.value)
+                return True
+            u32.EnumWindows(cb_t(cb), 0)
+            if found: raise ValueError('a worker has a window (%d)' % len(found))
+        step = 'closing the workers'
+        t1 = time.time()
+        picpool.close()
+        if any(w['p'].poll() is None for w in ws) or time.time() - t1 > 5:
+            raise ValueError('workers still running after their stdin closed')
+        sys.stdout.write('SELFTEST WORKERS OK %d %.1f\n' % (len(ws), time.time() - t0)); sys.stdout.flush()
+    except BaseException as e:
+        selftest_end('%s: %s' % (step, describe(e)))
+    selftest_end()
+
+
 if __name__ == '__main__':
+    if SELFTEST and sys.argv[1] == '--selftest-workers':
+        selftest_workers()
     if SELFTEST and sys.argv[1] == '--selftest-scenetest':
         selftest_scenetest(sys.argv[2] if len(sys.argv) > 2 else None)
     elif SELFTEST:

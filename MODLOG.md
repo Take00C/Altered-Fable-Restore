@@ -1517,3 +1517,163 @@ on by default (v11 leaves them out too).
   - Built from the flat public layout, both programs hold the same archives.
 - **Not seen in game:** the gallery overrides, and the Transparent drawer reading, which was never run inside the
   engine.
+
+## 0.1.2: the 2007 gallery entries, one missed shot, a lighter write (2026-11-19)
+
+GitHub issue #1, follow-up: the restored scenes had no gallery entries. Three researchers and a skeptic, then a
+navigation and an inventory pre-step, traced it in both games' gallery heaps (lab-tools/out/research/gallery-add).
+Three fixes, each with its own AFR_TEST off-switch, all on by default (v11 leaves them out too).
+
+- **What was missing.** AF 2007's gallery heap 390163 has 125 AF-tab entries, PM's AF tab 85.
+  - The 40 missing ones are the 23 entries of restored scenes, AF page 9 (15) and p8s10 (story pictures PM keeps but
+    its gallery dropped), and p10s9 5623fa69. p10s9 is left out: its only source is an unrestored island cut, so it
+    could never unlock.
+  - Frames are also missing inside PM's own entries 31 (4), 37 (4), 47 (1) and 64 (1, gated in 2007).
+  - Also left out: the 8 CG-size frames 2007 never put in its gallery, slot 62 (still the owner's question) and AF's
+    separate scene replay mode.
+- **F30 GALADD** (`nogaladd`): the 23 restored-scene entries, the missing frames of entries 31 and 37, and P1S12's
+  3d9b417b (taken out of the story by AF's update) and 3dacd72f (gallery-only).
+  - Unlock: the CStdb flag `AFR_GAL_<page/slot>`, OR the register of the part's own import.
+  - The flag is written by a clone of PM's 01a1a526a2@55 right after each of the 97 displays of the entry's key CG
+    (91 in 11 parts, 6 in yuuhi_a_cont). The display helpers 004fd24c62 / 010cd2f47e and the writer 00ba45d71a hold
+    no sync, so no save point lands on a new instruction.
+  - The register chain is Cr6Ti > CObjectOcean 5d35f8c5 > 27b4ea1b > pad2, the form of 00b94df0aa@112. This is what
+    lets scenes seen under 0.1.x count. It is inferred from the code, not traced at runtime.
+- **F31 GALPM** (`nogalpm`): AF page 9 and p8s10 (16 entries), entry 47's 332d80df and entry 64's 538c23f5.
+  - Unlock = the register of PM's own story object (byte-identical to the AF key CG), as for PM's own entries.
+  - 538c23f5 is gated as in 2007 (390163@1841) on SEE_WOKEN_MEMO_CG_YUKO_MANA_TUIKA, which PM itself writes at
+    017b6114d2@4134. The register heap answers it as pseudo entry 999, read by a clone of 00ba7f84ba@2045.
+- **F32 CG4721** (`nocg4721`): a restoration gap found on the way.
+  - 2007 and its update show 4721aabf at 45d98b@7626-7628. PM dropped the shot (it has no object for it), and no
+    restored part covers those lines.
+  - Fix: one import, and a non-capturing 3-instruction insert after 01b8c7a482@2119, cloned from @2115-2117 with
+    2007's camera (100, -279, 0, 1752, 1, 0) and transition (0, 100).
+  - Entry 31 gets 4721aabf only with F32 on. PM's own crop staging @2101 / @2110 / @2115 is unchanged.
+- **Gallery heaps** (new module `galadd.py`): 00d5836b7e (register), 00d5994f52 (tiles), 00ba7f84ba (pages, views).
+  - Every inserted instruction is a byte clone of an instruction of the same heap, and every insert is
+    non-capturing. The count @924 becomes 85 + 23·F30 + 16·F31 (124 / 108 / 101).
+  - Instructions 0-923 of 00ba7f84ba are byte-identical to PM's. They hold the achievement queries 6ac1f193(#37 /
+    #38) @589 / @874, so the new entries do not count toward them.
+  - Two departures from the plan. The register blocks sit after the first closing CVmRet @755, entered by @267's
+    redirected next: inline they would have changed @336's bytes. Entry 64's gate is the register pseudo entry 999.
+- **Navigation.** In PM's code only the keyboard reaches pages 7+.
+  - PageUp / F9 and PageDown / F10 give codes 257 / 258 (FUN_0054cc30 -> FUN_0054fa60, with the gallery's
+    AskUserSelectEx flags 0x3F0302). The mouse wheel only scrolls, and clicks give code 0 (FUN_0054f490).
+  - The owner chose "button 6 steps on". On the AF tab at page index >= 5, page button 6 (id 20) goes to the next
+    page, and from the last page back to index 5. It is drawn in style 2 (the current-page style) there.
+  - Pages 7+ have no title: an @1857 clone after @1363 skips item 1504's fade-in.
+  - That a style-2 button stays clickable rests on the inferred style -> ChangeNumCtrlExData cmd 8 binding. The hit
+    test FUN_0054bec0 skips only items with flag bit 8 at +0x18.
+- **Pictures.**
+  - 209 copies: 1280 x round(1280 H / W) of the whole AF picture, under PM's AF-tab copy header, each decoding back
+    within 2. Entry 31's frames use PM's 16:9 window (AF rows 219-2158).
+  - 39 thumbnails: galcg Lanczos3, 12 thumbnail rows down (0 for the 750-row p8s10), alpha 0x80, read back exactly.
+  - New reencache kinds galadd / galaddthumb.
+- **Ids and keys.**
+  - Ids: GALFLAG 0x3F360+, CG4721 0x3F3F0+, GALADD 0x3F920+, GALPM 0x3FB10+, GALNAV 0x3FBF0+. That is 782 new ids,
+    none of them in any 0.1.1 heap.
+  - Keys: 0x7FB00000+ (GALADD, 186), 0x7FB80000+ (GALPM, 61), 0x7FBF0000+ (CG4721, 2).
+  - In the ruo table the 5753 rows of 0.1.1 come first, in their order. 17 are changed: 4 PM site heaps whose part
+    refs grew, 01b8c7a482 (2 part refs and F32's insert), and 12 restored heaps. 252 new rows follow.
+  - The new pictures start 00 04, F32's import 00 03 (the established import form), the heaps 00 05.
+- **Memory.** ruowrite.write_ruo now writes the objects one by one. It used to join them into one buffer first and
+  held the data about four times. The bytes are the same: every sha1 below is unchanged.
+  - A build's peak working set falls from 3.47 GB (0.1.1) and 3.9-4.0 GB (0.1.2 before the change) to 1.77 GB (all
+    off) and 1.88-1.90 GB (default, English).
+- **Patch** (build_all b56750c0, galadd 8457eecd, reencache acc27788, ruowrite 92d3d66e; galcg 1d2effde and cgcrop
+  028a2779 unchanged):
+  - default 541516b5 (6005 entries), English c8564433;
+  - nogaladd,nogalpm,nocg4721 gives 0.1.1's 6a353183 (English eb4e97a1), cold and warm; v11 gives ea97eb32;
+  - nogaladd ea14eb83, nogalpm ad0f31cb, nocg4721 33820e3e, F32 only 092ef97a, no official update dffe319c.
+- **App 0.1.2** (`APP_VERSION = '0.1.2'`): `galadd` is in `BUNDLED` and in the hidden imports of all four specs.
+  - The first build after updating makes about 250 new pictures, about 15 minutes more. A whole cold build takes
+    about 20 minutes on the test PC.
+- **Checked:**
+  - Updater against a fake GitHub: 160/160. The published 0.1.1 code offers v0.1.2, verifies its zip and stages
+    both programs (6/6, also with the real zip).
+  - GUI tests with the tk stub: Altered Fable Restore 82/82 (a 0.1.1 player on 0.1.2 included), Scene Tester 76/76.
+  - Self-tests 60/60, regression against 0.1.1 30/30, specs 27/27, flat source 22/22, source self-tests 27/27.
+  - The workflow's pre-flight with tag v0.1.2, the notes extraction (CHANGELOG 0.1.2 section) and the zip check.
+- **Exes** (PyInstaller 6.22.3, Python 3.12.10):
+  - `dist/AFRestore.exe` is c9416ae3 and `dist/AFRestore Scene Tester.exe` is ba594f62. The 0.1.1 programs are in
+    `dist/old` as `AFRestore-0.1.1.exe` and `AFRestore Scene Tester-0.1.1.exe`.
+  - Their frozen modules equal app_src. Against 0.1.1 only the app code, build_all, reencache and ruowrite differ,
+    and galadd is new.
+  - exe == lab: the console twin's `--build` from an empty settings folder, with every cache entry made by the exe
+    itself, gives 6a353183 (all off), ad0f31cb (nogalpm, F30's 188 pictures), 541516b5 (default, F31's 60) and then
+    c8564433 (English, warm). The scene test kits equal the lab kits. Each run took under 15 minutes, and the peak
+    was 1.9 GB.
+- **Not seen in game:** pages 7-9, button 6 stepping on, the missing title, the unlocks, the flag writes, entry
+  64's gate, and F32's shot.
+
+## 0.1.2: a fast first build (2026-11-20)
+
+The owner asked for a much faster first build. From an empty settings folder a build took about 20 minutes, nearly all
+of it the serial pure-Python picture pass (292 re-encodes). A profile, a parallel design, the implementation, two
+reviews and a release step followed (lab-tools/out/research/fast-build). The output is byte-identical: every patch
+sha1 below and every re-encode cache entry are unchanged.
+
+- **Where the time went** (one serial cold build, Python 3.12): about 25 s of main work, then 1312 s of pictures.
+  resample2 393 s, AF decode 372 s, encode 278 s, the decode-back of every copy 141 s, Lanczos thumbnails 58.5 s and
+  a second copy decode for the thumbnails 24 s.
+- **picfast.py (new): exact fast forms of cgcrop / galcg.**
+  - decode: previous-row groups, a 20-bit literal table and a 16-bit run table;
+  - encode_track: also returns the rows the decoder will read, so the decode-back becomes the 'within 2' check on
+    those rows (16-bit lanes);
+  - resample2: the vertical pass first on big-integer lanes, in bands of 192 rows;
+  - thumb: lanes, taps computed once.
+  - cgcrop.py and galcg.py are unchanged. They stay the reference and the cache identity.
+  - Proof: fuzz against frozen copies of the 0.1.2 coders from two independent oracles, about 94,000 cases on
+    Python 3.11 / 3.12 / 3.14 with 0 mismatches (every planted mutant caught); exhaustive tables; all 292 real
+    outputs.
+- **picpool.py (new): picture workers.**
+  - Each worker is a copy of the program started with `--afr-picworker` (app.py dispatches it before any other
+    import). Pipes, no window (CREATE_NO_WINDOW), below-normal priority (elsewhere os.nice >= 10), and it exits when
+    its stdin closes.
+  - Handshake: the main's coder identities, the picfast / picpool code, Python version and executable, and a
+    known-answer picture. Every reply echoes the digests of its inputs.
+  - build_all plans the pictures at the start of its main section: one item per AF original, with both passes and
+    the thumbnails of its copies, largest first. The workers run while the scenes are converted.
+  - Only the main process writes the cache and the patch, at the old places in the old order. Any failure falls back
+    to the serial path.
+  - Count: AFR_JOBS (a number up to 1 = serial), else min(logical CPUs - 2, (free MB - 1024) / 300, 16): 14 here.
+- **Warm build.** CRsa encrypt / decrypt use one keystream per process (under a lock) and a big-integer XOR and
+  checksums: 18 s -> 1.8 s. A build keeps one handle per archive part (objio.keep_open), and patch_pm uses a dict. The
+  app's "Reading scripts" step goes from 12 s to 1.8 s.
+- **Frozen cache identity (found in the release step).**
+  - In the frozen app, reencache._code_id hashes marshal.dumps of cgcrop's live function code. marshal writes a
+    back-reference flag only for objects with more than one reference. cgcrop.header's struct format strings gain one
+    once struct's format cache keeps them (header has run; the cache clears at 100 formats).
+  - So the id depended on what had run before the first key. The main process (header already run) and a fresh
+    worker disagreed, and the exe's workers always fell back to serial.
+  - The id is now computed from a fresh copy of cgcrop's compiled code (reencache._as_imported), so it is the same
+    whatever ran before. It equals the id behind the 0.1.1 program's keys: the 0.1.1 console build from an empty
+    folder made 44 entries, and of the eight possible states only this one gives their keys (44 of 44).
+- **Review fixes.**
+  - crsa's keystream lock: two threads at once gave a wrong block in 5 of 6 trials, now 0.
+  - A planning step that raises skips only its own item.
+  - The summary counts every picture made in the main process (a killed worker: 266 = 292 - 26).
+  - AFR_JOBS '01' is serial too.
+- **Patch** (build_all 38c4ee87, picfast 5d73ec1f, picpool a97f1e1a, reencache 6306f00d, crsa 12b57de5, objio
+  81c1995d; cgcrop 028a2779 and galcg 1d2effde unchanged): default 541516b5, English c8564433, all off 6a353183, v11
+  ea97eb32, and the other switches as listed for 0.1.2. The new code's cold cache equals the 0.1.2 code's, 292 of 292
+  entries.
+- **Times** (Ryzen 7 5800X3D, 8 cores / 16 threads, below normal):
+  - the exe from an empty settings folder: 70 s with 14 workers, peak 3.4 GB for the whole process tree (the 0.1.2
+    serial exe took 1203 s in three slices); English warm 31 s (was 48 s);
+  - the exe on a 0.1.1 settings folder: 45 reused, 248 made;
+  - lab: cold 63.8-70.7 s with 14 workers, 124.6 s with 4 (with the kit), 430.8 s serial; warm 17.4-18.0 s (was
+    23.8 s).
+  - The floor: the pictures are about 410 CPU-seconds of pure-Python decode and encode, about 53 s on 14 workers. A
+    warm build is serial builder logic (heap parsing, scene conversion, PM patching) plus writing the 2.09 GB patch.
+- **CI** (`release.yml`): both programs also run once with `--selftest-workers` on Linux and Windows and in the check
+  of an attached Windows zip, but only when app.py has the flag (re-runs for older tags skip it). It is the only check
+  of the Linux frozen workers.
+- **Exes:** `dist/AFRestore.exe` ec9fb348 and `dist/AFRestore Scene Tester.exe` bb6315e9. The 0.1.2 serial ones are
+  in `dist/old` as `*-0.1.2-serial.exe`.
+  - Frozen modules equal app_src.
+  - In both windowed programs the workers run below normal, in one _MEI folder, with no window of any kind (the only
+    windows are the bootloader's hidden ones).
+- **Checked:** updater 160/160, and the published 0.1.1 code offers v0.1.2 (6/6, also with the real zip). GUI 82/82
+  and 76/76, self-tests 60/60, regression 30/30, specs 27/27, flat source 22/22, source self-tests 35/35 (with
+  `--selftest-workers`). The workflow's checks were simulated with the new steps: 28/28.

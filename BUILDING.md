@@ -48,7 +48,9 @@ To make the Windows zip, build both programs from the release's files (see *Buil
 
 The website can't upload folders, so the workflow file is created by typing its path: *Add file → Create new file*,
 name `.github/workflows/release.yml`, paste the file's content, *Commit changes*. It has to be in the repository
-before the release is published, because GitHub runs the workflow file of the release's tag.
+before the release is published, because GitHub runs the workflow file of the release's tag. To update a
+`release.yml` that is already there, open it, click the pencil (*Edit*), select all, paste the new content and
+*Commit changes*.
 
 If a run fails, fix the cause, then *Actions → Release → Run workflow* with the tag `vX.Y.Z`: it does the same again
 for that release and replaces the files it attached. A re-run uses the workflow file of `main` but builds the files of
@@ -65,10 +67,14 @@ artifacts for 14 days and no release is touched.
 - After building: each frozen program holds its entry script, the builder modules, the data files and Tcl/Tk, and
   runs once with `--selftest`. That flag opens no window, writes no files and prints `SELFTEST OK <version>` (exit
   code 0), or `SELFTEST FAILED <step>:` and the traceback (exit code 3). It has to catch every exception itself: in
-  a windowed Windows program an uncaught one opens an error box that nobody can close on the build machine.
+  a windowed Windows program an uncaught one opens an error box that nobody can close on the build machine. Then
+  each runs once with `--selftest-workers`: two picture workers of a build (the program itself started again) make
+  small synthetic pictures, and the flag checks that they run from the program's own files at low priority with no
+  window and give its bytes. It prints `SELFTEST WORKERS OK` (exit code 0). A program that fails it still builds the
+  right patch, only its first build is much slower (every picture in one process).
 - The archives: exactly the two programs at the top level (Linux: mode 755). A Windows zip attached by hand is opened
   the way the app's update opens it, and on a Windows machine both programs in it run once with `--selftest` and must
-  print `SELFTEST OK` with the release's version.
+  print `SELFTEST OK` with the release's version, then once with `--selftest-workers`.
 - `SHA256SUMS.txt`: every archive already on the release is downloaded and compared with GitHub's digest and with the
   line the release's earlier `SHA256SUMS.txt` had for it. The file is attached before the archives, and at the end
   GitHub's digest of every archive must equal its line.

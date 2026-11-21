@@ -2,6 +2,24 @@
 
 Supported game versions are checked by file size and SHA-1 (`required.json`).
 
+## 0.1.2 - 2026-11-19
+
+- Gallery (*Extras → Gallery*, first tab): 39 entries of the 2007 gallery are back, after Photonmelodies' own ones and
+  in the 2007 order, on pages 6 to 9. They are the restored scenes (23) and the 16 other 2007 entries that
+  Photonmelodies' gallery left out.
+- Four entries Photonmelodies already had now also show the extra views they had in 2007.
+- Pages 7 to 9 have no number button. On page 6, click the page-6 button again to go on to pages 7, 8 and 9 (after
+  page 9 it goes back to page 6). PageDown and PageUp work too.
+- A new entry opens once its picture has been shown in the story. Restored scenes you already played with 0.1.0 or
+  0.1.1 should count. If one stays locked, play that scene again.
+- One more 2007 picture in the story: a tall picture in the lines around the Myun × Chizuru scene that Photonmelodies
+  skipped.
+- Building needs about half the memory it did (about 2 GB). The first build needs more while it makes its pictures
+  (about 3.5 GB on a 16-thread PC).
+- Builds now make their pictures on several processor cores at once, at low priority.
+- After updating, click **Rebuild & install** once. The first build after the update also makes the new gallery
+  pictures: it took about 70 seconds on an 8-core PC. Later builds are faster.
+
 ## 0.1.1 - 2026-11-12
 
 - Gallery (*Extras → Gallery*): the uncensored pictures now show the 2007 art there too, in the full views and in

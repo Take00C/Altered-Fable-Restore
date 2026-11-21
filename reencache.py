@@ -7,7 +7,7 @@ re-crop) and their result depends only on their inputs. An entry is keyed by the
 where no source file exists, e.g. inside the frozen app, the sha1 of cgcrop's compiled code and the Python version).
 So a hit returns exactly the bytes cgcrop would compute now, and the patch stays byte-identical with or without the
 cache (checked: no cache, cold cache and warm cache builds give the same sha1). The galcg kinds ('galcopy',
-'galthumb', 'recut2') add galcg's identity (the same rule on galcg.py) to the key; the 'shrink' / 'recrop' keys are
+'galthumb', 'recut2'; 0.1.2's 'galadd', 'galaddthumb') add galcg's identity (the same rule on galcg.py) to the key; the 'shrink' / 'recrop' keys are
 unchanged, so the entries 0.1.0 made stay valid.
 
 Entries are written atomically (temp file + os.replace) and checked on every read (magic, format, payload sha1); a bad
@@ -15,13 +15,18 @@ or unreadable entry is computed again and rewritten. finish() (end of a build) r
 that were last used more than PRUNE_AFTER seconds ago (a build running in parallel keeps its entries).
 
 Location: env AFR_CACHE (a folder; '' or 'off' = no cache). Unset: <AFR_OUT or lab-tools/out>/cache/reencode for the
-lab; the app sets <settings folder>/cache. A frozen program without AFR_CACHE uses no cache."""
+lab; the app sets <settings folder>/cache. A frozen program without AFR_CACHE uses no cache.
+
+A miss is computed by picfast (the same bytes as cgcrop / galcg, proven against them; their identities stay the keys'),
+or taken from the build's picture workers (picpool.take: computed ahead in worker processes from the same inputs, whose
+digests every result echoes); either way only this process writes the entry, with the same meta, at the same point of
+the build. The *_key functions are the keys used below (picpool's planner in build_all asks for them)."""
 import os, sys, json, time, struct, hashlib
 
 FORMAT = 1
 MAGIC = b'AFRC'
 PRUNE_AFTER = 3600                  # seconds: entries unused by this build and older than this are removed by finish()
-_state = dict(hits=0, new=0, bad=0, used=set(), dir=None, code=None, galcode=None)
+_state = dict(hits=0, new=0, bad=0, pool=0, used=set(), dir=None, code=None, galcode=None)   # pool: new ones made by workers
 
 
 def cache_dir():
@@ -40,8 +45,28 @@ def cache_dir():
     return _state['dir'] or None
 
 
+def _as_imported(mod):
+    """A fresh copy of module mod as its import made it (its compiled code from the loader, run again in a module of
+    its own; not registered anywhere), else mod itself. For the frozen identity below: marshal marks an object it meets
+    twice with a back-reference, and it decides that by the object's reference count, so marshal.dumps of a live
+    function's code changes once a constant of it gets a holder elsewhere (struct's format cache keeps cgcrop.header's
+    format strings after header has run, until the cache is cleared). The copy has no such holder, whatever ran
+    before: the value 0.1.1's program computed (its cache keys, checked in research/fast-build/release)."""
+    import importlib.util, types
+    try:
+        spec = importlib.util.find_spec(mod.__name__)
+        code = spec.loader.get_code(mod.__name__) if spec and hasattr(spec.loader, 'get_code') else None
+    except Exception:
+        code = None
+    if code is None: return mod
+    copy = types.ModuleType(mod.__name__)
+    exec(code, copy.__dict__)
+    return copy
+
+
 def _code_id():
-    """Identity of the coder whose output is cached: sha1 of cgcrop.py's source, else of its compiled code."""
+    """Identity of the coder whose output is cached: sha1 of cgcrop.py's source, else of its compiled code (each
+    function's, as imported: _as_imported)."""
     if _state['code'] is None:
         import cgcrop
         h = hashlib.sha1(b'reencache %d|' % FORMAT)
@@ -52,8 +77,9 @@ def _code_id():
         except OSError:
             import marshal, types
             h.update(b'code|' + sys.version.encode())
-            for name in sorted(vars(cgcrop)):
-                v = getattr(cgcrop, name)
+            m = _as_imported(cgcrop)
+            for name in sorted(vars(m)):
+                v = getattr(m, name)
                 if isinstance(v, types.FunctionType) and v.__module__ == cgcrop.__name__:
                     h.update(name.encode() + b'|' + marshal.dumps(v.__code__) + repr(v.__defaults__).encode())
         _state['code'] = h.hexdigest()
@@ -92,8 +118,37 @@ def gal_key_of(kind, params, inputs):
     return key_of(kind, dict(params, galcg=_gal_code_id()), inputs)
 
 
+def recrop_key(pm_body, af_body, crop):
+    return key_of('recrop', dict(crop=[float(c) for c in crop]), [pm_body, af_body])
+
+
+def galcopy_key(kind, pm_body, af_body, win):
+    return gal_key_of(kind, dict(win=[float(c) for c in win]), [pm_body, af_body])
+
+
+def galthumb_key(pm_body, copy_body, win, kind='galthumb'):
+    return gal_key_of(kind, dict(win=[float(c) for c in win]), [pm_body, copy_body])
+
+
+def shrink_key(body, limit):
+    return key_of('shrink', dict(limit=limit), [body])
+
+
 def _path(key):
     return os.path.join(cache_dir(), key[:2], key + '.bin')
+
+
+def cached(key):
+    """An entry file for key exists (the planner's check: a cheap stat; get() still checks the entry)."""
+    return bool(cache_dir()) and os.path.isfile(_path(key))
+
+
+def _take(key):
+    """The build's picture workers' result for key, or None (not planned / no workers / failed: computed here)."""
+    p = sys.modules.get('picpool')
+    r = p.take(key) if p is not None else None
+    if r is not None: _state['pool'] += 1
+    return r
 
 
 def get(key):
@@ -139,9 +194,9 @@ def put(key, meta, data):
 
 def shrink(body, limit):
     """cgcrop.shrink(body, limit), cached. Same result: (body, (tol, rtol)) or (None, None)."""
-    import cgcrop
+    import picfast
     body = bytes(body)
-    key = key_of('shrink', dict(limit=limit), [body])
+    key = shrink_key(body, limit)
     _state['used'].add(key)
     hit = get(key)
     if hit is not None:
@@ -150,7 +205,8 @@ def shrink(body, limit):
         if meta.get('fits') is True and isinstance(meta.get('used'), list):
             _state['hits'] += 1
             return data, tuple(meta['used'])
-    small, used = cgcrop.shrink(body, limit)
+    r = _take(key)
+    small, used = r if r is not None else picfast.shrink(body, limit)
     put(key, dict(kind='shrink', fits=small is not None, used=list(used) if used else None), small or b'')
     _state['new'] += 1
     return small, used
@@ -158,28 +214,29 @@ def shrink(body, limit):
 
 def recrop(pm_body, af_body, crop, source):
     """cgcrop.rebuild(pm_body, source(), crop)[0], cached; source() decodes the AF picture (only on a miss)."""
-    import cgcrop
+    import picfast
     pm_body, af_body = bytes(pm_body), bytes(af_body)
-    key = key_of('recrop', dict(crop=[float(c) for c in crop]), [pm_body, af_body])
+    key = recrop_key(pm_body, af_body, crop)
     _state['used'].add(key)
     hit = get(key)
     if hit is not None and hit[0].get('kind') == 'recrop':
         _state['hits'] += 1
         return hit[1]
-    new, _ = cgcrop.rebuild(pm_body, source(), crop)
+    new = _take(key)
+    if new is None: new, _ = picfast.rebuild(pm_body, source(), crop)
     put(key, dict(kind='recrop'), new)
     _state['new'] += 1
     return new
 
 
-def _gal_cached(kind, params, inputs, make):
-    key = gal_key_of(kind, params, inputs)
+def _gal_cached(kind, key, make):
     _state['used'].add(key)
     hit = get(key)
     if hit is not None and hit[0].get('kind') == kind:
         _state['hits'] += 1
         return hit[1]
-    new = make()
+    new = _take(key)
+    if new is None: new = make()
     put(key, dict(kind=kind), new)
     _state['new'] += 1
     return new
@@ -187,26 +244,31 @@ def _gal_cached(kind, params, inputs, make):
 
 def galcopy(kind, pm_body, af_body, win, source, what):
     """galcg.rebuild_copy(pm_body, source(), win)[0], cached ('galcopy': a gallery copy; 'recut2': an F28 story
-    re-cut); source() decodes the AF picture (only on a miss). A new entry passed rebuild_copy's checks."""
-    import galcg
-    if kind not in ('galcopy', 'recut2'): raise ValueError(kind)
+    re-cut; 'galadd': a new gallery copy of F30-F32, pm_body = PM's header made for it, galadd.picture_header);
+    source() decodes the AF picture (only on a miss). A new entry passed rebuild_copy's checks."""
+    import picfast
+    if kind not in ('galcopy', 'recut2', 'galadd'): raise ValueError(kind)
     pm_body, af_body = bytes(pm_body), bytes(af_body)
-    return _gal_cached(kind, dict(win=[float(c) for c in win]), [pm_body, af_body],
-                       lambda: galcg.rebuild_copy(pm_body, source(), win, what)[0])
+    return _gal_cached(kind, galcopy_key(kind, pm_body, af_body, win),
+                       lambda: picfast.rebuild_copy(pm_body, source(), win, what)[0])
 
 
-def galthumb(pm_body, copy_body, win, what):
+def galthumb(pm_body, copy_body, win, what, kind='galthumb'):
     """galcg.rebuild_thumb(pm_body, copy_body, win), cached; copy_body = the rebuilt gallery copy. A new entry passed
-    rebuild_thumb's checks (the drawer emulation reads back the target, opaque on every pixel)."""
-    import galcg
+    rebuild_thumb's checks (the drawer emulation reads back the target, opaque on every pixel). kind 'galaddthumb': a
+    new thumbnail of F30 / F31 (pm_body = PM's header made for it, galadd.picture_header)."""
+    import picfast
+    if kind not in ('galthumb', 'galaddthumb'): raise ValueError(kind)
     pm_body, copy_body = bytes(pm_body), bytes(copy_body)
-    return _gal_cached('galthumb', dict(win=[float(c) for c in win]), [pm_body, copy_body],
-                       lambda: galcg.rebuild_thumb(pm_body, copy_body, win, what))
+    return _gal_cached(kind, galthumb_key(pm_body, copy_body, win, kind),
+                       lambda: picfast.rebuild_thumb(pm_body, copy_body, win, what))
 
 
 def finish(log=None):
-    """End of a build: remove entries this build did not use and nobody used for PRUNE_AFTER seconds. Returns a
-    summary line (also passed to log)."""
+    """End of a build: stop the build's picture workers (picpool), remove entries this build did not use and nobody
+    used for PRUNE_AFTER seconds. Returns a summary line (also passed to log)."""
+    p = sys.modules.get('picpool')
+    if p is not None: p.close(log)
     removed = 0
     d = cache_dir()
     if d and os.path.isdir(d):

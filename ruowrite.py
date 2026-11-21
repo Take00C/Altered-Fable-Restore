@@ -57,19 +57,24 @@ def allocated(path):
 
 
 def write_ruo(path, objs):
-    """objs: list of (key_enc_off, bytes). Returns (data_start, total_size, sparse)."""
+    """objs: list of (key_enc_off, bytes). Returns (data_start, total_size, sparse).
+    From data_start on the file holds every object in order, each starting on a 4-byte boundary (zero padding, also
+    after the last one), then the table and the u32 count. The objects are written one by one, so no second copy of
+    the data is held in memory (0.1.1 joined everything into one buffer first: the same bytes, ~3 copies more)."""
     start = data_start()
     sparse = set_sparse(path)
-    blob = bytearray(); table = []
-    for key, data in objs:
-        while len(blob) % 4: blob.append(0)
-        pos = start + len(blob)
-        table.append(struct.pack('<III', key, (K + (pos >> SHIFT)) & 0xFFFFFFFF, enc_size(len(data))))
-        blob += data
-    while len(blob) % 4: blob.append(0)
+    table = []; off = 0
     with open(path, 'r+b') as f:
         f.seek(start)
-        f.write(bytes(blob) + b''.join(table) + struct.pack('<I', len(table)))
+        for key, data in objs:
+            if off % 4:
+                f.write(b'\0' * (4 - off % 4)); off += 4 - off % 4
+            pos = start + off
+            table.append(struct.pack('<III', key, (K + (pos >> SHIFT)) & 0xFFFFFFFF, enc_size(len(data))))
+            f.write(data); off += len(data)
+        if off % 4:
+            f.write(b'\0' * (4 - off % 4)); off += 4 - off % 4
+        f.write(b''.join(table) + struct.pack('<I', len(table)))
     total = os.path.getsize(path)
     a = allocated(path)
     if a is not None:

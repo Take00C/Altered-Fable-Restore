@@ -4,7 +4,7 @@ AF: header at 2*(enc-K) = decoded_off - 3. Header (UnivUI FUN_1000a9c0): b0,b1,b
     [+2 if b0&3==2] [+4 if b0&3==3]; schema = f(b1>>6, b2[, b3]).
 PM: header at 4*(enc-K): [flags][schema] (+ extra byte if flags & 0x80; schema word if flags&4 ...).
 Raw size (dec_size()+3) covers header + body in both."""
-import os, struct
+import os, struct, threading
 
 AF_RIO = os.environ.get("AFR_AF_RIO") or r"C:/age/マブラヴオルタードフェイブル/altfable.rio"
 PM_RIO = os.environ.get("AFR_PM_RIO") or r"C:/Program Files (x86)/Steam/steamapps/common/Muv-Luv photonmelodies/photonmelodies11.rio"
@@ -56,19 +56,46 @@ def map_patch(path, patch_path, vbase):
     _patch_map[path] = (patch_path, vbase)
 
 
+_keep = [False]       # keep_open(True): read_at keeps one handle per file (a build: ~15,000 reads)
+_handles = {}
+_hlock = threading.Lock()
+
+
+def keep_open(on):
+    """While on, read_at keeps each file it reads open (one handle per file, reads under a lock: threads may share
+    it); off closes them. A build turns it on for its run (build_all, app.do_build); off by default, so a long-running
+    process (the window) never holds a game file open."""
+    with _hlock:
+        _keep[0] = bool(on)
+        if not on:
+            for f in _handles.values():
+                try: f.close()
+                except OSError: pass
+            _handles.clear()
+
+
+def _read(p, pos, n):
+    if _keep[0]:
+        with _hlock:
+            if _keep[0]:
+                f = _handles.get(p)
+                if f is None: f = _handles[p] = open(p, 'rb')
+                f.seek(pos); return f.read(n)
+    with open(p, 'rb') as f:
+        f.seek(pos); return f.read(n)
+
+
 def read_at(path, pos, n):
     pm_ = _patch_map.get(path)
     if pm_ and pos >= pm_[1]:
-        with open(pm_[0], 'rb') as f:
-            f.seek(pos - pm_[1]); return f.read(n)
+        return _read(pm_[0], pos - pm_[1], n)
     ps = _parts.get(path) or parts(path)         # (the cached list itself: read_at only iterates it)
     out = b''
     for p in ps:
         sz = _sizes.get(p)
         if sz is None: sz = _sizes[p] = os.path.getsize(p)
         if pos < sz:
-            with open(p, 'rb') as f:
-                f.seek(pos); chunk = f.read(min(n, sz - pos))
+            chunk = _read(p, pos, min(n, sz - pos))
             out += chunk; n -= len(chunk); pos = 0
             if n <= 0: break
         else:

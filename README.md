@@ -12,7 +12,8 @@ games.
    - **Linux / Steam Deck (Desktop Mode):** `AFRestore-vX.Y.Z-linux-x64.tar.gz`.
 2. Open **AFRestore**. It finds both games by itself. If it doesn't, click **Browse...** and pick each game's folder.
    Both lines must say **found, correct version**.
-3. Click **Build & install**. It takes a few minutes.
+3. Click **Build & install**. It takes a minute or two (the first time about 70 seconds on an 8-core PC, longer on
+   smaller PCs).
 4. Click **Play (via Steam)**, or on the Steam Deck start the game from Gaming Mode.
 
 **Turn OFF** removes the restored content without uninstalling anything, and **Turn ON** brings it back.
@@ -44,6 +45,7 @@ click **Rebuild & install**.
 
 - The cut 18+ scenes, with their lead-ins and aftermaths
 - The original, uncensored CGs, also in the scenes Photonmelodies kept and in the gallery
+- The 2007 gallery entries of the restored scenes, and the other ones Photonmelodies' gallery left out
 - The Marimo-chan route, chosen in the island section's "who to spend time with" picker
 - Original voices, music, sound effects, backgrounds and sprites
 - The corrected text, voices and staging from âge's official update (`altfable.rio.ruo1`), when it is installed
