@@ -71,11 +71,6 @@ restored content: return to the title screen and load another save. If Steam upd
 
 Found a problem? Open an issue with a screenshot and the scene it happened in.
 
-## Documentation
-
-- [`MODLOG.md`](MODLOG.md): the engineering journal (file formats, engine facts, decisions, tests)
-- [`BUILDING.md`](BUILDING.md): how releases are made, and how to build the programs yourself
-
 ## Credits and licence
 
 Muv-Luv, Muv-Luv Altered Fable and Muv-Luv photonmelodies♮ are © âge / aNCHOR. This is an unofficial fan project,
